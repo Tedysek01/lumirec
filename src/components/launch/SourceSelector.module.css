@@ -1,41 +1,46 @@
 
 .glassContainer {
-  background: linear-gradient(135deg, rgba(28,28,34,0.92) 0%, rgba(18,18,22,0.88) 100%);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
-  border-radius: 14px;
-  box-shadow: 0 4px 16px 0 rgba(0,0,0,0.32), 0 1px 3px 0 rgba(0,0,0,0.18) inset;
-  border: 1px solid rgba(60,60,80,0.18);
+  background: linear-gradient(135deg, hsl(220 18% 10% / 0.92) 0%, hsl(220 18% 8% / 0.88) 100%);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border-radius: 12px;
+  box-shadow: 0 8px 40px -8px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.03);
+  border: 1px solid hsl(220 15% 18% / 0.5);
 }
 
 .sourceCard {
-  border-radius: 10px;
-  background: linear-gradient(120deg, rgba(38,38,48,0.98) 0%, rgba(24,24,32,0.96) 100%);
-  border: 1px solid rgba(60,60,80,0.22);
+  border-radius: 8px;
+  background: hsl(220 18% 12%);
+  border: 1px solid hsl(220 15% 18% / 0.5);
   box-shadow: 0 2px 8px 0 rgba(0,0,0,0.18);
   transition: box-shadow 0.2s, border 0.2s, background 0.2s;
 }
 
+.sourceCard:hover {
+  background: hsl(220 18% 16%);
+  border-color: hsl(220 15% 24%);
+}
+
 .selected {
-  border: 2px solid #34B27B;
-  background: linear-gradient(120deg, rgba(91,33,182,0.18) 0%, rgba(38,38,48,0.98) 100%);
-  box-shadow: 0 0 0 2px #34B27B33;
+  border: 2px solid hsl(210 100% 60%);
+  background: hsl(210 100% 60% / 0.08);
+  box-shadow: 0 0 12px 2px hsl(210 100% 60% / 0.2);
 }
 
 .icon {
   width: 13px;
   height: 13px;
-  color: #c7d2fe;
+  color: hsl(220 10% 75%);
 }
 
 .name {
   font-size: 0.85rem;
-  color: #f3f4f6;
+  color: hsl(220 10% 95%);
   font-weight: 500;
   letter-spacing: 0.01em;
 }
 
 .cardText {
-  color: #a1a1aa;
+  color: hsl(220 10% 55%);
   font-size: 0.75rem;
 }

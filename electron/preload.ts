@@ -63,4 +63,56 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getPlatform: () => {
     return ipcRenderer.invoke('get-platform')
   },
+  // Project file operations
+  saveProjectFile: (json: string, existingPath?: string) => {
+    return ipcRenderer.invoke('save-project-file', json, existingPath)
+  },
+  openProjectFile: () => {
+    return ipcRenderer.invoke('open-project-file')
+  },
+  fileExists: (filePath: string) => {
+    return ipcRenderer.invoke('file-exists', filePath)
+  },
+  addRecentProject: (projectPath: string) => {
+    return ipcRenderer.invoke('add-recent-project', projectPath)
+  },
+  getRecentProjects: () => {
+    return ipcRenderer.invoke('get-recent-projects')
+  },
+  // Native recorder (cursor-free ScreenCaptureKit)
+  nativeRecorderAvailable: () => {
+    return ipcRenderer.invoke('native-recorder-available')
+  },
+  startNativeRecording: (options: { displayId: string; micDeviceId?: string; micEnabled?: boolean }) => {
+    return ipcRenderer.invoke('start-native-recording', options)
+  },
+  stopNativeRecording: () => {
+    return ipcRenderer.invoke('stop-native-recording')
+  },
+  // Cursor tracking
+  startCursorTracking: (sourceBounds?: { x: number; y: number; width: number; height: number }) => {
+    return ipcRenderer.invoke('start-cursor-tracking', sourceBounds)
+  },
+  stopCursorTracking: () => {
+    return ipcRenderer.invoke('stop-cursor-tracking')
+  },
+  storeCursorData: (frames: any[], fileName: string) => {
+    return ipcRenderer.invoke('store-cursor-data', frames, fileName)
+  },
+  getCursorData: (videoFilePath: string) => {
+    return ipcRenderer.invoke('get-cursor-data', videoFilePath)
+  },
+  // Microphone permission
+  getMicPermissionStatus: () => {
+    return ipcRenderer.invoke('get-mic-permission-status')
+  },
+  requestMicPermission: () => {
+    return ipcRenderer.invoke('request-mic-permission')
+  },
+  // Menu action listener
+  onMenuAction: (callback: (action: string) => void) => {
+    const listener = (_event: any, action: string) => callback(action)
+    ipcRenderer.on('menu-action', listener)
+    return () => ipcRenderer.removeListener('menu-action', listener)
+  },
 })

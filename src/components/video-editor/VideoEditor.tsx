@@ -15,63 +15,154 @@ import type { Span } from "dnd-timeline";
 import {
   DEFAULT_ZOOM_DEPTH,
   clampFocusToDepth,
-  DEFAULT_CROP_REGION,
   DEFAULT_ANNOTATION_POSITION,
   DEFAULT_ANNOTATION_SIZE,
   DEFAULT_ANNOTATION_STYLE,
   DEFAULT_FIGURE_DATA,
+  DEFAULT_SEGMENT_TRANSFORM,
   type ZoomDepth,
   type ZoomFocus,
   type ZoomRegion,
   type TrimRegion,
   type AnnotationRegion,
-  type CropRegion,
+  type VideoSegment,
   type FigureData,
+  type TransitionConfig,
 } from "./types";
+import {
+  createInitialSegment,
+  splitSegment,
+  rippleSegments,
+  findSegmentAtSourceTime,
+  migrateFromTrimRegions,
+  sourceToDisplayTime,
+  displayToSourceTime,
+  getTotalTimelineDuration,
+} from "@/lib/segmentUtils";
 import { VideoExporter, GifExporter, type ExportProgress, type ExportQuality, type ExportSettings, type ExportFormat, type GifFrameRate, type GifSizePreset, GIF_SIZE_PRESETS, calculateOutputDimensions } from "@/lib/exporter";
-import { type AspectRatio, getAspectRatioValue } from "@/utils/aspectRatioUtils";
+import { getAspectRatioValue } from "@/utils/aspectRatioUtils";
 import { getAssetPath } from "@/lib/assetPath";
+import { useUndoRedo } from "@/hooks/useUndoRedo";
+import { type EditorUndoableState, createInitialEditorState } from "./editorState";
+import { useProjectFile } from "@/hooks/useProjectFile";
+import type { ProjectFileData } from "@/lib/projectFile";
+import type { CursorFrame } from "@/lib/cursorTracker";
 
 const WALLPAPER_COUNT = 18;
 const WALLPAPER_PATHS = Array.from({ length: WALLPAPER_COUNT }, (_, i) => `/wallpapers/wallpaper${i + 1}.jpg`);
 
 export default function VideoEditor() {
+  // --- Undoable state (project data) ---
+  const {
+    state: editorState,
+    setState: setEditorState,
+    setStateDebounced: setEditorStateDebounced,
+    undo,
+    redo,
+    resetState: resetEditorState,
+  } = useUndoRedo<EditorUndoableState>(createInitialEditorState(WALLPAPER_PATHS[0]));
+
+  // Destructure undoable state for convenient access
+  const {
+    wallpaper, shadowIntensity, showBlur, motionBlurEnabled,
+    borderRadius, padding, cropRegion, zoomRegions,
+    trimRegions, videoSegments, annotationRegions, aspectRatio, cursorHighlight,
+  } = editorState;
+
+  // --- Transient state (not undoable) ---
   const [videoPath, setVideoPath] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [wallpaper, setWallpaper] = useState<string>(WALLPAPER_PATHS[0]);
-  const [shadowIntensity, setShadowIntensity] = useState(0);
-  const [showBlur, setShowBlur] = useState(false);
-  const [motionBlurEnabled, setMotionBlurEnabled] = useState(false);
-  const [borderRadius, setBorderRadius] = useState(0);
-  const [padding, setPadding] = useState(50);
-  const [cropRegion, setCropRegion] = useState<CropRegion>(DEFAULT_CROP_REGION);
-  const [zoomRegions, setZoomRegions] = useState<ZoomRegion[]>([]);
   const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
-  const [trimRegions, setTrimRegions] = useState<TrimRegion[]>([]);
   const [selectedTrimId, setSelectedTrimId] = useState<string | null>(null);
-  const [annotationRegions, setAnnotationRegions] = useState<AnnotationRegion[]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [razorToolActive, setRazorToolActive] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [exportQuality, setExportQuality] = useState<ExportQuality>('good');
   const [exportFormat, setExportFormat] = useState<ExportFormat>('mp4');
   const [gifFrameRate, setGifFrameRate] = useState<GifFrameRate>(15);
   const [gifLoop, setGifLoop] = useState(true);
   const [gifSizePreset, setGifSizePreset] = useState<GifSizePreset>('medium');
+  const [cursorData, setCursorData] = useState<CursorFrame[]>([]);
 
   const videoPlaybackRef = useRef<VideoPlaybackRef>(null);
   const nextZoomIdRef = useRef(1);
   const nextTrimIdRef = useRef(1);
   const nextAnnotationIdRef = useRef(1);
-  const nextAnnotationZIndexRef = useRef(1); // Track z-index for stacking order
+  const nextAnnotationZIndexRef = useRef(1);
   const exporterRef = useRef<VideoExporter | null>(null);
+
+  // --- Undoable state updater helpers ---
+  // Discrete updates (push undo snapshot immediately)
+  const updateState = useCallback(<K extends keyof EditorUndoableState>(key: K, value: EditorUndoableState[K]) => {
+    setEditorState(prev => ({ ...prev, [key]: value }));
+  }, [setEditorState]);
+
+  // Debounced updates for sliders (one undo per drag gesture)
+  const updateStateDebounced = useCallback(<K extends keyof EditorUndoableState>(key: K, value: EditorUndoableState[K]) => {
+    setEditorStateDebounced(prev => ({ ...prev, [key]: value }));
+  }, [setEditorStateDebounced]);
+
+  // --- Project Save/Load ---
+  const handleLoadProject = useCallback((data: ProjectFileData, videoUrl: string) => {
+    // Reset editor state (clears undo history)
+    resetEditorState(data.editorState);
+    // Set video path
+    setVideoPath(videoUrl);
+    window.electronAPI.setCurrentVideoPath(videoUrl.replace(/^file:\/\//, ''));
+    // Restore export settings
+    if (data.exportSettings) {
+      setExportQuality(data.exportSettings.quality);
+      setExportFormat(data.exportSettings.format);
+      setGifFrameRate(data.exportSettings.gifFrameRate);
+      setGifLoop(data.exportSettings.gifLoop);
+      setGifSizePreset(data.exportSettings.gifSizePreset);
+    }
+    // Reset selections
+    setSelectedZoomId(null);
+    setSelectedTrimId(null);
+    setSelectedAnnotationId(null);
+    setSelectedSegmentId(null);
+    setRazorToolActive(false);
+    // Reset ID counters based on loaded data
+    const maxZoomId = data.editorState.zoomRegions.reduce((max, r) => {
+      const num = parseInt(r.id.replace('zoom-', ''), 10);
+      return isNaN(num) ? max : Math.max(max, num);
+    }, 0);
+    const maxTrimId = data.editorState.trimRegions.reduce((max, r) => {
+      const num = parseInt(r.id.replace('trim-', ''), 10);
+      return isNaN(num) ? max : Math.max(max, num);
+    }, 0);
+    const maxAnnotationId = data.editorState.annotationRegions.reduce((max, r) => {
+      const num = parseInt(r.id.replace('annotation-', ''), 10);
+      return isNaN(num) ? max : Math.max(max, num);
+    }, 0);
+    const maxZIndex = data.editorState.annotationRegions.reduce((max, r) => Math.max(max, r.zIndex || 0), 0);
+    nextZoomIdRef.current = maxZoomId + 1;
+    nextTrimIdRef.current = maxTrimId + 1;
+    nextAnnotationIdRef.current = maxAnnotationId + 1;
+    nextAnnotationZIndexRef.current = maxZIndex + 1;
+  }, [resetEditorState]);
+
+  const { saveProject, saveProjectAs, openProject } = useProjectFile({
+    videoPath,
+    editorState,
+    exportSettings: {
+      quality: exportQuality,
+      format: exportFormat,
+      gifFrameRate,
+      gifLoop,
+      gifSizePreset,
+    },
+    onLoadProject: handleLoadProject,
+  });
 
   // Helper to convert file path to proper file:// URL
   const toFileUrl = (filePath: string): string => {
@@ -109,34 +200,84 @@ export default function VideoEditor() {
     loadVideo();
   }, []);
 
-  // Initialize default wallpaper with resolved asset path
+  // Load cursor data when video path changes
+  useEffect(() => {
+    if (!videoPath) {
+      setCursorData([]);
+      return;
+    }
+    // Convert file:// URL back to file path for the IPC call
+    const filePath = videoPath.replace(/^file:\/\//, '');
+    window.electronAPI.getCursorData(filePath).then((result) => {
+      if (result.success && result.frames && result.frames.length > 0) {
+        setCursorData(result.frames);
+
+        // Mark cursor-free recordings so the pointer always renders (no native cursor in video)
+        if (result.cursorFree) {
+          setEditorState(prev => ({
+            ...prev,
+            cursorHighlight: {
+              ...prev.cursorHighlight,
+              cursorFree: true,
+              cursorType: prev.cursorHighlight.cursorType === 'none' ? 'native' : prev.cursorHighlight.cursorType,
+            },
+          }));
+        }
+      } else {
+        setCursorData([]);
+      }
+    }).catch(() => {
+      setCursorData([]);
+    });
+  }, [videoPath]);
+
+  // Initialize video segments when duration becomes available
+  // Also handles migration from trim regions for backwards compatibility
+  useEffect(() => {
+    if (duration <= 0) return;
+    const totalMs = Math.round(duration * 1000);
+    // Only initialize if no segments exist yet
+    if (videoSegments.length === 0) {
+      if (trimRegions.length > 0) {
+        // Migrate: invert trim regions into kept segments
+        const migrated = migrateFromTrimRegions(trimRegions, totalMs);
+        setEditorState(prev => ({ ...prev, videoSegments: migrated }));
+      } else {
+        const initialSegment = createInitialSegment(totalMs);
+        setEditorState(prev => ({ ...prev, videoSegments: [initialSegment] }));
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duration]);
+
+  // Initialize default wallpaper with resolved asset path (no undo snapshot for init)
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
         const resolvedPath = await getAssetPath('wallpapers/wallpaper1.jpg');
         if (mounted) {
-          setWallpaper(resolvedPath);
+          resetEditorState({ ...editorState, wallpaper: resolvedPath });
         }
       } catch (err) {
-        // If resolution fails, keep the fallback
         console.warn('Failed to resolve default wallpaper path:', err);
       }
     })();
     return () => { mounted = false };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function togglePlayPause() {
+  const togglePlayPause = useCallback(() => {
     const playback = videoPlaybackRef.current;
     const video = playback?.video;
     if (!playback || !video) return;
 
-    if (isPlaying) {
-      playback.pause();
-    } else {
+    if (video.paused) {
       playback.play().catch(err => console.error('Video play failed:', err));
+    } else {
+      playback.pause();
     }
-  }
+  }, []);
 
   function handleSeek(time: number) {
     const video = videoPlaybackRef.current?.video;
@@ -146,7 +287,11 @@ export default function VideoEditor() {
 
   const handleSelectZoom = useCallback((id: string | null) => {
     setSelectedZoomId(id);
-    if (id) setSelectedTrimId(null);
+    if (id) {
+      setSelectedTrimId(null);
+      setSelectedAnnotationId(null);
+      setSelectedSegmentId(null);
+    }
   }, []);
 
   const handleSelectTrim = useCallback((id: string | null) => {
@@ -154,6 +299,7 @@ export default function VideoEditor() {
     if (id) {
       setSelectedZoomId(null);
       setSelectedAnnotationId(null);
+      setSelectedSegmentId(null);
     }
   }, []);
 
@@ -162,6 +308,7 @@ export default function VideoEditor() {
     if (id) {
       setSelectedZoomId(null);
       setSelectedTrimId(null);
+      setSelectedSegmentId(null);
     }
   }, []);
 
@@ -174,11 +321,11 @@ export default function VideoEditor() {
       depth: DEFAULT_ZOOM_DEPTH,
       focus: { cx: 0.5, cy: 0.5 },
     };
-    setZoomRegions((prev) => [...prev, newRegion]);
+    setEditorState(prev => ({ ...prev, zoomRegions: [...prev.zoomRegions, newRegion] }));
     setSelectedZoomId(id);
     setSelectedTrimId(null);
     setSelectedAnnotationId(null);
-  }, []);
+  }, [setEditorState]);
 
   const handleTrimAdded = useCallback((span: Span) => {
     const id = `trim-${nextTrimIdRef.current++}`;
@@ -187,85 +334,100 @@ export default function VideoEditor() {
       startMs: Math.round(span.start),
       endMs: Math.round(span.end),
     };
-    setTrimRegions((prev) => [...prev, newRegion]);
+    setEditorState(prev => ({ ...prev, trimRegions: [...prev.trimRegions, newRegion] }));
     setSelectedTrimId(id);
     setSelectedZoomId(null);
     setSelectedAnnotationId(null);
-  }, []);
+  }, [setEditorState]);
 
   const handleZoomSpanChange = useCallback((id: string, span: Span) => {
-    setZoomRegions((prev) =>
-      prev.map((region) =>
+    setEditorState(prev => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((region) =>
         region.id === id
-          ? {
-              ...region,
-              startMs: Math.round(span.start),
-              endMs: Math.round(span.end),
-            }
+          ? { ...region, startMs: Math.round(span.start), endMs: Math.round(span.end) }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorState]);
 
   const handleTrimSpanChange = useCallback((id: string, span: Span) => {
-    setTrimRegions((prev) =>
-      prev.map((region) =>
+    setEditorState(prev => ({
+      ...prev,
+      trimRegions: prev.trimRegions.map((region) =>
         region.id === id
-          ? {
-              ...region,
-              startMs: Math.round(span.start),
-              endMs: Math.round(span.end),
-            }
+          ? { ...region, startMs: Math.round(span.start), endMs: Math.round(span.end) }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorState]);
 
   const handleZoomFocusChange = useCallback((id: string, focus: ZoomFocus) => {
-    setZoomRegions((prev) =>
-      prev.map((region) =>
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((region) =>
         region.id === id
-          ? {
-              ...region,
-              focus: clampFocusToDepth(focus, region.depth),
-            }
+          ? { ...region, focus: clampFocusToDepth(focus, region.depth) }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorStateDebounced]);
 
   const handleZoomDepthChange = useCallback((depth: ZoomDepth) => {
     if (!selectedZoomId) return;
-    setZoomRegions((prev) =>
-      prev.map((region) =>
+    setEditorState(prev => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((region) =>
         region.id === selectedZoomId
-          ? {
-              ...region,
-              depth,
-              focus: clampFocusToDepth(region.focus, depth),
-            }
+          ? { ...region, depth, focus: clampFocusToDepth(region.focus, depth) }
           : region,
       ),
-    );
-  }, [selectedZoomId]);
+    }));
+  }, [selectedZoomId, setEditorState]);
+
+  const handleZoomTransitionChange = useCallback((id: string, enter: TransitionConfig, exit: TransitionConfig) => {
+    setEditorState(prev => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((region) =>
+        region.id === id
+          ? { ...region, enterTransition: enter, exitTransition: exit }
+          : region,
+      ),
+    }));
+  }, [setEditorState]);
 
   const handleZoomDelete = useCallback((id: string) => {
-    setZoomRegions((prev) => prev.filter((region) => region.id !== id));
+    setEditorState(prev => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.filter((region) => region.id !== id),
+    }));
     if (selectedZoomId === id) {
       setSelectedZoomId(null);
     }
-  }, [selectedZoomId]);
+  }, [selectedZoomId, setEditorState]);
 
   const handleTrimDelete = useCallback((id: string) => {
-    setTrimRegions((prev) => prev.filter((region) => region.id !== id));
+    setEditorState(prev => ({
+      ...prev,
+      trimRegions: prev.trimRegions.filter((region) => region.id !== id),
+    }));
     if (selectedTrimId === id) {
       setSelectedTrimId(null);
     }
-  }, [selectedTrimId]);
+  }, [selectedTrimId, setEditorState]);
+
+  const handleAutoZoomApply = useCallback((newRegions: ZoomRegion[], nextId: number) => {
+    if (newRegions.length === 0) return;
+    nextZoomIdRef.current = nextId;
+    setEditorState(prev => ({
+      ...prev,
+      zoomRegions: [...prev.zoomRegions, ...newRegions],
+    }));
+  }, [setEditorState]);
 
   const handleAnnotationAdded = useCallback((span: Span) => {
     const id = `annotation-${nextAnnotationIdRef.current++}`;
-    const zIndex = nextAnnotationZIndexRef.current++; // Assign z-index based on creation order
+    const zIndex = nextAnnotationZIndexRef.current++;
     const newRegion: AnnotationRegion = {
       id,
       startMs: Math.round(span.start),
@@ -277,39 +439,38 @@ export default function VideoEditor() {
       style: { ...DEFAULT_ANNOTATION_STYLE },
       zIndex,
     };
-    setAnnotationRegions((prev) => [...prev, newRegion]);
+    setEditorState(prev => ({ ...prev, annotationRegions: [...prev.annotationRegions, newRegion] }));
     setSelectedAnnotationId(id);
     setSelectedZoomId(null);
     setSelectedTrimId(null);
-  }, []);
+  }, [setEditorState]);
 
   const handleAnnotationSpanChange = useCallback((id: string, span: Span) => {
-    setAnnotationRegions((prev) =>
-      prev.map((region) =>
+    setEditorState(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) =>
         region.id === id
-          ? {
-              ...region,
-              startMs: Math.round(span.start),
-              endMs: Math.round(span.end),
-            }
+          ? { ...region, startMs: Math.round(span.start), endMs: Math.round(span.end) }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorState]);
 
   const handleAnnotationDelete = useCallback((id: string) => {
-    setAnnotationRegions((prev) => prev.filter((region) => region.id !== id));
+    setEditorState(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.filter((region) => region.id !== id),
+    }));
     if (selectedAnnotationId === id) {
       setSelectedAnnotationId(null);
     }
-  }, [selectedAnnotationId]);
+  }, [selectedAnnotationId, setEditorState]);
 
   const handleAnnotationContentChange = useCallback((id: string, content: string) => {
-    setAnnotationRegions((prev) => {
-      const updated = prev.map((region) => {
+    setEditorState(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) => {
         if (region.id !== id) return region;
-        
-        // Store content in type-specific fields
         if (region.type === 'text') {
           return { ...region, content, textContent: content };
         } else if (region.type === 'image') {
@@ -317,19 +478,16 @@ export default function VideoEditor() {
         } else {
           return { ...region, content };
         }
-      });
-      return updated;
-    });
-  }, []);
+      }),
+    }));
+  }, [setEditorState]);
 
   const handleAnnotationTypeChange = useCallback((id: string, type: AnnotationRegion['type']) => {
-    setAnnotationRegions((prev) => {
-      const updated = prev.map((region) => {
+    setEditorState(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) => {
         if (region.id !== id) return region;
-        
         const updatedRegion = { ...region, type };
-        
-        // Restore content from type-specific storage
         if (type === 'text') {
           updatedRegion.content = region.textContent || 'Enter text...';
         } else if (type === 'image') {
@@ -340,54 +498,135 @@ export default function VideoEditor() {
             updatedRegion.figureData = { ...DEFAULT_FIGURE_DATA };
           }
         }
-        
         return updatedRegion;
-      });
-      return updated;
-    });
-  }, []);
+      }),
+    }));
+  }, [setEditorState]);
 
   const handleAnnotationStyleChange = useCallback((id: string, style: Partial<AnnotationRegion['style']>) => {
-    setAnnotationRegions((prev) =>
-      prev.map((region) =>
+    setEditorState(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) =>
         region.id === id
           ? { ...region, style: { ...region.style, ...style } }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorState]);
 
   const handleAnnotationFigureDataChange = useCallback((id: string, figureData: FigureData) => {
-    setAnnotationRegions((prev) =>
-      prev.map((region) =>
+    setEditorState(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) =>
         region.id === id
           ? { ...region, figureData }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorState]);
 
   const handleAnnotationPositionChange = useCallback((id: string, position: { x: number; y: number }) => {
-    setAnnotationRegions((prev) =>
-      prev.map((region) =>
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) =>
         region.id === id
           ? { ...region, position }
           : region,
       ),
-    );
-  }, []);
+    }));
+  }, [setEditorStateDebounced]);
 
   const handleAnnotationSizeChange = useCallback((id: string, size: { width: number; height: number }) => {
-    setAnnotationRegions((prev) =>
-      prev.map((region) =>
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      annotationRegions: prev.annotationRegions.map((region) =>
         region.id === id
           ? { ...region, size }
           : region,
       ),
-    );
+    }));
+  }, [setEditorStateDebounced]);
+
+  // --- Video Segment handlers ---
+
+  const handleSelectSegment = useCallback((id: string | null) => {
+    setSelectedSegmentId(id);
+    if (id) {
+      setSelectedZoomId(null);
+      setSelectedTrimId(null);
+      setSelectedAnnotationId(null);
+    }
   }, []);
-  
-  // Global Tab prevention
+
+  const handleSplitSegmentAt = useCallback((segmentId: string, sourceTimeMs: number) => {
+    setEditorState(prev => {
+      const segment = prev.videoSegments.find(s => s.id === segmentId);
+      if (!segment) return prev;
+      const result = splitSegment(segment, sourceTimeMs);
+      if (!result) return prev;
+      const [left, right] = result;
+      const updated = prev.videoSegments.map(s => s.id === segmentId ? left : s);
+      // Insert right after left
+      const idx = updated.findIndex(s => s.id === left.id);
+      updated.splice(idx + 1, 0, right);
+      return { ...prev, videoSegments: rippleSegments(updated) };
+    });
+  }, [setEditorState]);
+
+  const handleDeleteSegment = useCallback((segmentId: string) => {
+    setEditorState(prev => {
+      const updated = prev.videoSegments.filter(s => s.id !== segmentId);
+      if (updated.length === 0) return prev; // Don't allow deleting all segments
+      return { ...prev, videoSegments: rippleSegments(updated) };
+    });
+    if (selectedSegmentId === segmentId) {
+      setSelectedSegmentId(null);
+    }
+  }, [selectedSegmentId, setEditorState]);
+
+  const handleSegmentSpanChange = useCallback((segmentId: string, newSourceStart: number, newSourceEnd: number) => {
+    setEditorState(prev => {
+      const updated = prev.videoSegments.map(s =>
+        s.id === segmentId
+          ? { ...s, sourceStartMs: Math.round(newSourceStart), sourceEndMs: Math.round(newSourceEnd) }
+          : s,
+      );
+      return { ...prev, videoSegments: rippleSegments(updated) };
+    });
+  }, [setEditorState]);
+
+  const handleSegmentTransformChange = useCallback((segmentId: string, transform: Partial<VideoSegment['transform']>) => {
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s =>
+        s.id === segmentId
+          ? { ...s, transform: { ...s.transform, ...transform } }
+          : s,
+      ),
+    }));
+  }, [setEditorStateDebounced]);
+
+  const handleSegmentTransformReset = useCallback((segmentId: string) => {
+    setEditorState(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s =>
+        s.id === segmentId
+          ? { ...s, transform: { ...DEFAULT_SEGMENT_TRANSFORM }, keyframes: [] }
+          : s,
+      ),
+    }));
+  }, [setEditorState]);
+
+  // Razor tool: split at current playhead position (source time coordinates)
+  const handleRazorAtPlayhead = useCallback(() => {
+    const sourceTimeMs = Math.round(currentTime * 1000);
+    const segment = findSegmentAtSourceTime(videoSegments, sourceTimeMs);
+    if (segment) {
+      handleSplitSegmentAt(segment.id, sourceTimeMs);
+    }
+  }, [currentTime, videoSegments, handleSplitSegmentAt]);
+
+  // Global Tab prevention + keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Tab') {
@@ -398,13 +637,43 @@ export default function VideoEditor() {
         e.preventDefault();
       }
 
+      // Cmd+B / Ctrl+B: Split at playhead
+      if ((e.key === 'b' || e.key === 'B') && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        handleRazorAtPlayhead();
+        return;
+      }
+
+      // Delete / Backspace: Remove selected segment
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSegmentId) {
+        // Don't intercept if in an input/textarea
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+          return;
+        }
+        e.preventDefault();
+        handleDeleteSegment(selectedSegmentId);
+        return;
+      }
+
+      // Razor tool shortcuts (only without modifiers, not in inputs)
+      if ((e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        setRazorToolActive(true);
+        return;
+      }
+      if ((e.key === 'v' || e.key === 'V') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        setRazorToolActive(false);
+        return;
+      }
+
       if (e.key === ' ' || e.code === 'Space') {
         // Allow space only in inputs/textareas
         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
           return;
         }
         e.preventDefault();
-        
+
         const playback = videoPlaybackRef.current;
         if (playback?.video) {
           if (playback.video.paused) {
@@ -415,10 +684,10 @@ export default function VideoEditor() {
         }
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-  }, []);
+  }, [handleRazorAtPlayhead, handleDeleteSegment, selectedSegmentId]);
 
   useEffect(() => {
     if (selectedZoomId && !zoomRegions.some((region) => region.id === selectedZoomId)) {
@@ -437,6 +706,12 @@ export default function VideoEditor() {
       setSelectedAnnotationId(null);
     }
   }, [selectedAnnotationId, annotationRegions]);
+
+  useEffect(() => {
+    if (selectedSegmentId && !videoSegments.some((s) => s.id === selectedSegmentId)) {
+      setSelectedSegmentId(null);
+    }
+  }, [selectedSegmentId, videoSegments]);
 
   const handleExport = useCallback(async (settings: ExportSettings) => {
     if (!videoPath) {
@@ -493,6 +768,9 @@ export default function VideoEditor() {
           annotationRegions,
           previewWidth,
           previewHeight,
+          cursorData,
+          cursorHighlight,
+          videoSegments,
           onProgress: (progress: ExportProgress) => {
             setExportProgress(progress);
           },
@@ -618,6 +896,9 @@ export default function VideoEditor() {
           annotationRegions,
           previewWidth,
           previewHeight,
+          cursorData,
+          cursorHighlight,
+          videoSegments,
           onProgress: (progress: ExportProgress) => {
             setExportProgress(progress);
           },
@@ -663,7 +944,7 @@ export default function VideoEditor() {
       setShowExportDialog(false);
       setExportProgress(null);
     }
-  }, [videoPath, wallpaper, zoomRegions, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, padding, cropRegion, annotationRegions, isPlaying, aspectRatio, exportQuality]);
+  }, [videoPath, wallpaper, zoomRegions, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, padding, cropRegion, annotationRegions, isPlaying, aspectRatio, exportQuality, cursorData, cursorHighlight, videoSegments]);
 
   const handleOpenExportDialog = useCallback(() => {
     if (!videoPath) {
@@ -712,6 +993,22 @@ export default function VideoEditor() {
     }
   }, []);
 
+  // Listen for Electron menu actions (placed after all handlers are defined)
+  useEffect(() => {
+    const cleanup = window.electronAPI.onMenuAction((action: string) => {
+      switch (action) {
+        case 'undo': undo(); break;
+        case 'redo': redo(); break;
+        case 'save': saveProject(); break;
+        case 'save-as': saveProjectAs(); break;
+        case 'open': openProject(); break;
+        case 'export': handleOpenExportDialog(); break;
+        case 'toggle-play': togglePlayPause(); break;
+      }
+    });
+    return cleanup;
+  }, [undo, redo, saveProject, saveProjectAs, openProject, handleOpenExportDialog, togglePlayPause]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-background">
@@ -729,9 +1026,9 @@ export default function VideoEditor() {
 
 
   return (
-    <div className="flex flex-col h-screen bg-[#09090b] text-slate-200 overflow-hidden selection:bg-[#34B27B]/30">
-      <div 
-        className="h-10 flex-shrink-0 bg-[#09090b]/80 backdrop-blur-md border-b border-white/5 flex items-center justify-between px-6 z-50"
+    <div className="flex flex-col h-screen bg-background text-foreground font-sans overflow-hidden selection:bg-primary/30">
+      <div
+        className="h-10 flex-shrink-0 bg-surface-0/80 backdrop-blur-md border-b border-border/40 flex items-center justify-between px-6 z-50"
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <div className="flex-1" />
@@ -743,7 +1040,7 @@ export default function VideoEditor() {
           <PanelGroup direction="vertical" className="gap-3">
             {/* Top section: video preview and controls */}
             <Panel defaultSize={70} minSize={40}>
-              <div className="w-full h-full flex flex-col items-center justify-center bg-black/40 rounded-2xl border border-white/5 shadow-2xl overflow-hidden">
+              <div className="w-full h-full flex flex-col items-center justify-center bg-black/40 rounded-lg border border-border/30 shadow-2xl overflow-hidden">
                 {/* Video preview */}
                 <div className="w-full flex justify-center items-center" style={{ flex: '1 1 auto', margin: '6px 0 0' }}>
                   <div className="relative" style={{ width: 'auto', height: '100%', aspectRatio: getAspectRatioValue(aspectRatio), maxWidth: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
@@ -775,6 +1072,9 @@ export default function VideoEditor() {
                       onSelectAnnotation={handleSelectAnnotation}
                       onAnnotationPositionChange={handleAnnotationPositionChange}
                       onAnnotationSizeChange={handleAnnotationSizeChange}
+                      cursorData={cursorData}
+                      cursorHighlight={cursorHighlight}
+                      videoSegments={videoSegments}
                     />
                   </div>
                 </div>
@@ -783,23 +1083,34 @@ export default function VideoEditor() {
                   <div style={{ width: '100%', maxWidth: '700px' }}>
                     <PlaybackControls
                       isPlaying={isPlaying}
-                      currentTime={currentTime}
-                      duration={duration}
+                      currentTime={videoSegments.length > 0
+                        ? sourceToDisplayTime(videoSegments, Math.round(currentTime * 1000)) / 1000
+                        : currentTime}
+                      duration={videoSegments.length > 0
+                        ? getTotalTimelineDuration(videoSegments) / 1000
+                        : duration}
                       onTogglePlayPause={togglePlayPause}
-                      onSeek={handleSeek}
+                      onSeek={(displayTimeSec) => {
+                        if (videoSegments.length > 0) {
+                          const sourceMs = displayToSourceTime(videoSegments, displayTimeSec * 1000);
+                          handleSeek(sourceMs / 1000);
+                        } else {
+                          handleSeek(displayTimeSec);
+                        }
+                      }}
                     />
                   </div>
                 </div>
               </div>
             </Panel>
 
-            <PanelResizeHandle className="h-3 bg-[#09090b]/80 hover:bg-[#09090b] transition-colors rounded-full mx-4 flex items-center justify-center">
-              <div className="w-8 h-1 bg-white/20 rounded-full"></div>
+            <PanelResizeHandle className="h-3 bg-background/80 hover:bg-background transition-colors rounded-full mx-4 flex items-center justify-center">
+              <div className="w-8 h-1 bg-foreground/20 rounded-full"></div>
             </PanelResizeHandle>
 
             {/* Timeline section */}
             <Panel defaultSize={30} minSize={20}>
-              <div className="h-full bg-[#09090b] rounded-2xl border border-white/5 shadow-lg overflow-hidden flex flex-col">
+              <div className="h-full bg-background rounded-lg border border-border/30 shadow-lg overflow-hidden flex flex-col">
                 <TimelineEditor
               videoDuration={duration}
               currentTime={currentTime}
@@ -822,8 +1133,21 @@ export default function VideoEditor() {
               onAnnotationDelete={handleAnnotationDelete}
               selectedAnnotationId={selectedAnnotationId}
               onSelectAnnotation={handleSelectAnnotation}
+              videoSegments={videoSegments}
+              selectedSegmentId={selectedSegmentId}
+              onSelectSegment={handleSelectSegment}
+              onSplitSegment={handleSplitSegmentAt}
+              onDeleteSegment={handleDeleteSegment}
+              onSegmentSpanChange={handleSegmentSpanChange}
+              razorToolActive={razorToolActive}
+              onRazorToolChange={setRazorToolActive}
+              onRazorAtPlayhead={handleRazorAtPlayhead}
+              videoPath={videoPath}
               aspectRatio={aspectRatio}
-              onAspectRatioChange={setAspectRatio}
+              onAspectRatioChange={(v) => updateState('aspectRatio', v)}
+              cursorData={cursorData}
+              onAutoZoomApply={handleAutoZoomApply}
+              nextZoomId={nextZoomIdRef.current}
             />
               </div>
             </Panel>
@@ -833,7 +1157,7 @@ export default function VideoEditor() {
           {/* Right section: settings panel */}
           <SettingsPanel
           selected={wallpaper}
-          onWallpaperChange={setWallpaper}
+          onWallpaperChange={(v) => updateState('wallpaper', v)}
           selectedZoomDepth={selectedZoomId ? zoomRegions.find(z => z.id === selectedZoomId)?.depth : null}
           onZoomDepthChange={(depth) => selectedZoomId && handleZoomDepthChange(depth)}
           selectedZoomId={selectedZoomId}
@@ -841,17 +1165,17 @@ export default function VideoEditor() {
           selectedTrimId={selectedTrimId}
           onTrimDelete={handleTrimDelete}
           shadowIntensity={shadowIntensity}
-          onShadowChange={setShadowIntensity}
+          onShadowChange={(v) => updateStateDebounced('shadowIntensity', v)}
           showBlur={showBlur}
-          onBlurChange={setShowBlur}
+          onBlurChange={(v) => updateState('showBlur', v)}
           motionBlurEnabled={motionBlurEnabled}
-          onMotionBlurChange={setMotionBlurEnabled}
+          onMotionBlurChange={(v) => updateState('motionBlurEnabled', v)}
           borderRadius={borderRadius}
-          onBorderRadiusChange={setBorderRadius}
+          onBorderRadiusChange={(v) => updateStateDebounced('borderRadius', v)}
           padding={padding}
-          onPaddingChange={setPadding}
+          onPaddingChange={(v) => updateStateDebounced('padding', v)}
           cropRegion={cropRegion}
-          onCropChange={setCropRegion}
+          onCropChange={(v) => updateState('cropRegion', v)}
           aspectRatio={aspectRatio}
           videoElement={videoPlaybackRef.current?.video || null}
           exportQuality={exportQuality}
@@ -878,6 +1202,16 @@ export default function VideoEditor() {
           onAnnotationStyleChange={handleAnnotationStyleChange}
           onAnnotationFigureDataChange={handleAnnotationFigureDataChange}
           onAnnotationDelete={handleAnnotationDelete}
+          cursorHighlight={cursorHighlight}
+          onCursorHighlightChange={(v) => updateState('cursorHighlight', v)}
+          hasCursorData={cursorData.length > 0}
+          zoomRegions={zoomRegions}
+          onZoomTransitionChange={handleZoomTransitionChange}
+          videoSegments={videoSegments}
+          selectedSegmentId={selectedSegmentId}
+          onSegmentTransformChange={handleSegmentTransformChange}
+          onSegmentTransformReset={handleSegmentTransformReset}
+          onSegmentDelete={handleDeleteSegment}
         />
       </div>
 

@@ -6,6 +6,9 @@ import { applyZoomTransform } from '@/components/video-editor/videoPlayback/zoom
 import { DEFAULT_FOCUS, SMOOTHING_FACTOR, MIN_DELTA } from '@/components/video-editor/videoPlayback/constants';
 import { clampFocusToStage as clampFocusToStageUtil } from '@/components/video-editor/videoPlayback/focusUtils';
 import { renderAnnotations } from './annotationRenderer';
+import { renderCursorHighlight } from './cursorHighlightExportRenderer';
+import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
+import { computeTransitionState } from '@/components/video-editor/videoPlayback/transitionEngine';
 
 interface FrameRenderConfig {
   width: number;
@@ -24,6 +27,8 @@ interface FrameRenderConfig {
   annotationRegions?: AnnotationRegion[];
   previewWidth?: number;
   previewHeight?: number;
+  cursorData?: CursorFrame[];
+  cursorHighlight?: CursorHighlightConfig;
 }
 
 interface AnimationState {
@@ -282,6 +287,12 @@ export class FrameRenderer {
       maxMotionIntensity = Math.max(maxMotionIntensity, motionIntensity);
     }
     
+    // Compute transition state for the dominant region
+    const { region: dominantRegion } = findDominantRegion(this.config.zoomRegions, timeMs);
+    const transitionState = dominantRegion
+      ? computeTransitionState(dominantRegion, timeMs)
+      : undefined;
+
     // Apply transform once with maximum motion intensity from all ticks
     applyZoomTransform({
       cameraContainer: this.cameraContainer,
@@ -294,6 +305,7 @@ export class FrameRenderer {
       motionIntensity: maxMotionIntensity,
       isPlaying: true,
       motionBlurEnabled: this.config.motionBlurEnabled ?? false,
+      transitionState,
     });
 
     // Render the PixiJS stage to its canvas (video only, transparent background)
@@ -318,6 +330,27 @@ export class FrameRenderer {
         this.config.height,
         timeMs,
         scaleFactor
+      );
+    }
+
+    // Render cursor highlight on top
+    if (this.config.cursorData && this.config.cursorHighlight && this.compositeCtx && this.layoutCache) {
+      const videoW = this.config.videoWidth;
+      const videoH = this.config.videoHeight;
+      const { baseScale, baseOffset } = this.layoutCache;
+      const { cropRegion } = this.config;
+      // Offset accounts for video container position and crop
+      const cursorOffX = baseOffset.x - cropRegion.x * videoW * baseScale;
+      const cursorOffY = baseOffset.y - cropRegion.y * videoH * baseScale;
+      renderCursorHighlight(
+        this.compositeCtx,
+        this.config.cursorData,
+        this.config.cursorHighlight,
+        timeMs,
+        videoW * baseScale,
+        videoH * baseScale,
+        cursorOffX,
+        cursorOffY,
       );
     }
   }

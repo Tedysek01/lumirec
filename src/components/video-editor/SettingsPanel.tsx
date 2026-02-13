@@ -7,9 +7,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import Block from '@uiw/react-color-block';
-import { Trash2, Download, Crop, X, Bug, Upload, Star, Film, Image, Sparkles, Palette } from "lucide-react";
+import { Trash2, Download, Crop, X, Upload, Film, Image, Sparkles, Palette, MousePointer2, RotateCw, Move, Link, Unlink } from "lucide-react";
 import { toast } from "sonner";
-import type { ZoomDepth, CropRegion, AnnotationRegion, AnnotationType } from "./types";
+import type { ZoomDepth, CropRegion, AnnotationRegion, AnnotationType, VideoSegment, SegmentTransform } from "./types";
 import { CropControl } from "./CropControl";
 import { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
 import { AnnotationSettingsPanel } from "./AnnotationSettingsPanel";
@@ -17,6 +17,11 @@ import { type AspectRatio } from "@/utils/aspectRatioUtils";
 import type { ExportQuality, ExportFormat, GifFrameRate, GifSizePreset } from "@/lib/exporter";
 import { GIF_FRAME_RATES, GIF_SIZE_PRESETS } from "@/lib/exporter";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { CursorHighlightSettings } from "./CursorHighlightSettings";
+import type { CursorHighlightConfig } from "@/lib/cursorTracker";
+import { TransitionSettingsPanel } from "./TransitionSettingsPanel";
+import type { TransitionConfig, ZoomRegion } from "./types";
+import { DEFAULT_TRANSITION_CONFIG } from "./types";
 
 const WALLPAPER_COUNT = 18;
 const WALLPAPER_RELATIVE = Array.from({ length: WALLPAPER_COUNT }, (_, i) => `wallpapers/wallpaper${i + 1}.jpg`);
@@ -90,6 +95,16 @@ interface SettingsPanelProps {
   onAnnotationStyleChange?: (id: string, style: Partial<AnnotationRegion['style']>) => void;
   onAnnotationFigureDataChange?: (id: string, figureData: any) => void;
   onAnnotationDelete?: (id: string) => void;
+  cursorHighlight?: CursorHighlightConfig;
+  onCursorHighlightChange?: (config: CursorHighlightConfig) => void;
+  hasCursorData?: boolean;
+  zoomRegions?: ZoomRegion[];
+  onZoomTransitionChange?: (id: string, enter: TransitionConfig, exit: TransitionConfig) => void;
+  videoSegments?: VideoSegment[];
+  selectedSegmentId?: string | null;
+  onSegmentTransformChange?: (segmentId: string, transform: Partial<SegmentTransform>) => void;
+  onSegmentTransformReset?: (segmentId: string) => void;
+  onSegmentDelete?: (segmentId: string) => void;
 }
 
 export default SettingsPanel;
@@ -108,10 +123,10 @@ export function SettingsPanel({
   onWallpaperChange, 
   selectedZoomDepth, 
   onZoomDepthChange, 
-  selectedZoomId, 
-  onZoomDelete, 
-  selectedTrimId,
-  onTrimDelete,
+  selectedZoomId,
+  onZoomDelete,
+  selectedTrimId: _selectedTrimId,
+  onTrimDelete: _onTrimDelete,
   shadowIntensity = 0, 
   onShadowChange, 
   showBlur, 
@@ -145,6 +160,16 @@ export function SettingsPanel({
   onAnnotationStyleChange,
   onAnnotationFigureDataChange,
   onAnnotationDelete,
+  cursorHighlight,
+  onCursorHighlightChange,
+  hasCursorData = false,
+  zoomRegions = [],
+  onZoomTransitionChange,
+  videoSegments = [],
+  selectedSegmentId,
+  onSegmentTransformChange,
+  onSegmentTransformReset,
+  onSegmentDelete,
 }: SettingsPanelProps) {
   const [wallpaperPaths, setWallpaperPaths] = useState<string[]>([]);
   const [customImages, setCustomImages] = useState<string[]>([]);
@@ -165,25 +190,19 @@ export function SettingsPanel({
   const colorPalette = [
     '#FF0000', '#FFD700', '#00FF00', '#FFFFFF', '#0000FF', '#FF6B00',
     '#9B59B6', '#E91E63', '#00BCD4', '#FF5722', '#8BC34A', '#FFC107',
-    '#34B27B', '#000000', '#607D8B', '#795548',
+    '#3B82F6', '#000000', '#607D8B', '#795548',
   ];
   
   const [selectedColor, setSelectedColor] = useState('#ADADAD');
   const [gradient, setGradient] = useState<string>(GRADIENTS[0]);
   const [showCropDropdown, setShowCropDropdown] = useState(false);
+  const [scaleLocked, setScaleLocked] = useState(true);
 
   const zoomEnabled = Boolean(selectedZoomDepth);
-  const trimEnabled = Boolean(selectedTrimId);
-  
+
   const handleDeleteClick = () => {
     if (selectedZoomId && onZoomDelete) {
       onZoomDelete(selectedZoomId);
-    }
-  };
-
-  const handleTrimDeleteClick = () => {
-    if (selectedTrimId && onTrimDelete) {
-      onTrimDelete(selectedTrimId);
     }
   };
 
@@ -239,6 +258,11 @@ export function SettingsPanel({
     ? annotationRegions.find(a => a.id === selectedAnnotationId)
     : null;
 
+  // Find selected segment
+  const selectedSegment = selectedSegmentId
+    ? videoSegments.find(s => s.id === selectedSegmentId)
+    : null;
+
   // If an annotation is selected, show annotation settings instead
   if (selectedAnnotation && onAnnotationContentChange && onAnnotationTypeChange && onAnnotationStyleChange && onAnnotationDelete) {
     return (
@@ -254,14 +278,14 @@ export function SettingsPanel({
   }
 
   return (
-    <div className="flex-[2] min-w-0 bg-[#09090b] border border-white/5 rounded-2xl flex flex-col shadow-xl h-full overflow-hidden">
+    <div className="flex-[2] min-w-0 bg-background border border-border/30 rounded-lg font-sans flex flex-col shadow-xl h-full overflow-hidden">
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 pb-0">
         <div className="mb-4">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-sm font-medium text-slate-200">Zoom Level</span>
+            <span className="text-sm font-sans text-foreground">Zoom Level</span>
             <div className="flex items-center gap-2">
               {zoomEnabled && selectedZoomDepth && (
-                <span className="text-[10px] uppercase tracking-wider font-medium text-[#34B27B] bg-[#34B27B]/10 px-2 py-0.5 rounded-full">
+                <span className="text-[10px] uppercase tracking-wider font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full">
                   {ZOOM_DEPTH_OPTIONS.find(o => o.depth === selectedZoomDepth)?.label}
                 </span>
               )}
@@ -282,8 +306,8 @@ export function SettingsPanel({
                     "duration-200 ease-out",
                     zoomEnabled ? "opacity-100 cursor-pointer" : "opacity-40 cursor-not-allowed",
                     isActive
-                      ? "border-[#34B27B] bg-[#34B27B] text-white shadow-[#34B27B]/20"
-                      : "border-white/5 bg-white/5 text-slate-400 hover:bg-white/10 hover:border-white/10 hover:text-slate-200"
+                      ? "border-primary bg-primary text-white shadow-primary/20"
+                      : "border-border/30 bg-secondary text-muted-foreground hover:bg-accent hover:border-border/40 hover:text-foreground"
                   )}
                 >
                   <span className="text-xs font-semibold">{option.label}</span>
@@ -292,68 +316,225 @@ export function SettingsPanel({
             })}
           </div>
           {!zoomEnabled && (
-            <p className="text-[10px] text-slate-500 mt-2 text-center">Select a zoom region to adjust</p>
+            <p className="text-[10px] text-muted-foreground mt-2 text-center">Select a zoom region to adjust</p>
           )}
           {zoomEnabled && (
-            <Button
-              onClick={handleDeleteClick}
-              variant="destructive"
-              size="sm"
-              className="mt-2 w-full gap-2 bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 hover:border-red-500/30 transition-all h-8 text-xs"
-            >
-              <Trash2 className="w-3 h-3" />
-              Delete Zoom
-            </Button>
+            <>
+              <Button
+                onClick={handleDeleteClick}
+                variant="destructive"
+                size="sm"
+                className="mt-2 w-full gap-2 bg-destructive/15 text-destructive border border-destructive/30 hover:bg-destructive/25 hover:border-destructive/50 transition-all h-8 text-xs"
+              >
+                <Trash2 className="w-3 h-3" />
+                Delete Zoom
+              </Button>
+              {selectedZoomId && onZoomTransitionChange && (() => {
+                const region = zoomRegions.find(z => z.id === selectedZoomId);
+                if (!region) return null;
+                return (
+                  <div className="mt-3 p-2 rounded-lg bg-secondary border border-border/30">
+                    <TransitionSettingsPanel
+                      enterTransition={region.enterTransition || { ...DEFAULT_TRANSITION_CONFIG }}
+                      exitTransition={region.exitTransition || { ...DEFAULT_TRANSITION_CONFIG }}
+                      onEnterChange={(config) => onZoomTransitionChange(selectedZoomId, config, region.exitTransition || { ...DEFAULT_TRANSITION_CONFIG })}
+                      onExitChange={(config) => onZoomTransitionChange(selectedZoomId, region.enterTransition || { ...DEFAULT_TRANSITION_CONFIG }, config)}
+                    />
+                  </div>
+                );
+              })()}
+            </>
           )}
         </div>
 
-        {trimEnabled && (
+        {selectedSegment && onSegmentTransformChange && (
           <div className="mb-4">
-            <Button
-              onClick={handleTrimDeleteClick}
-              variant="destructive"
-              size="sm"
-              className="w-full gap-2 bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 hover:border-red-500/30 transition-all h-8 text-xs"
-            >
-              <Trash2 className="w-3 h-3" />
-              Delete Trim Region
-            </Button>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <RotateCw className="w-4 h-4 text-blue-400" />
+                <span className="text-sm font-sans text-foreground">Transform</span>
+              </div>
+              <span className="text-[10px] uppercase tracking-wider font-medium text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded-full">
+                Segment
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[10px] font-medium text-foreground/80">Rotation</div>
+                  <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.rotation.toFixed(0)}&deg;</span>
+                </div>
+                <Slider
+                  value={[selectedSegment.transform.rotation]}
+                  onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { rotation: values[0] })}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  className="w-full [&_[role=slider]]:bg-blue-400 [&_[role=slider]]:border-blue-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                />
+              </div>
+
+              {scaleLocked ? (
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1.5">
+                      <div className="text-[10px] font-medium text-foreground/80">Scale</div>
+                      <button
+                        type="button"
+                        onClick={() => setScaleLocked(false)}
+                        className="text-blue-400 hover:text-blue-300 transition-colors"
+                        title="Unlink X/Y scale"
+                      >
+                        <Link className="w-3 h-3" />
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.scaleX.toFixed(2)}</span>
+                  </div>
+                  <Slider
+                    value={[selectedSegment.transform.scaleX]}
+                    onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { scaleX: values[0], scaleY: values[0] })}
+                    min={0.1}
+                    max={3}
+                    step={0.01}
+                    className="w-full [&_[role=slider]]:bg-blue-400 [&_[role=slider]]:border-blue-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <div className="text-[10px] font-medium text-foreground/80">Scale X</div>
+                        <button
+                          type="button"
+                          onClick={() => setScaleLocked(true)}
+                          className="text-muted-foreground hover:text-blue-400 transition-colors"
+                          title="Link X/Y scale"
+                        >
+                          <Unlink className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.scaleX.toFixed(2)}</span>
+                    </div>
+                    <Slider
+                      value={[selectedSegment.transform.scaleX]}
+                      onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { scaleX: values[0] })}
+                      min={0.1}
+                      max={3}
+                      step={0.01}
+                      className="w-full [&_[role=slider]]:bg-blue-400 [&_[role=slider]]:border-blue-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                    />
+                  </div>
+                  <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-[10px] font-medium text-foreground/80">Scale Y</div>
+                      <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.scaleY.toFixed(2)}</span>
+                    </div>
+                    <Slider
+                      value={[selectedSegment.transform.scaleY]}
+                      onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { scaleY: values[0] })}
+                      min={0.1}
+                      max={3}
+                      step={0.01}
+                      className="w-full [&_[role=slider]]:bg-blue-400 [&_[role=slider]]:border-blue-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-[10px] font-medium text-foreground/80">Position X</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.positionX.toFixed(0)}px</span>
+                  </div>
+                  <Slider
+                    value={[selectedSegment.transform.positionX]}
+                    onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { positionX: values[0] })}
+                    min={-500}
+                    max={500}
+                    step={1}
+                    className="w-full [&_[role=slider]]:bg-blue-400 [&_[role=slider]]:border-blue-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                  />
+                </div>
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-[10px] font-medium text-foreground/80">Position Y</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.positionY.toFixed(0)}px</span>
+                  </div>
+                  <Slider
+                    value={[selectedSegment.transform.positionY]}
+                    onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { positionY: values[0] })}
+                    min={-500}
+                    max={500}
+                    step={1}
+                    className="w-full [&_[role=slider]]:bg-blue-400 [&_[role=slider]]:border-blue-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                {onSegmentTransformReset && (
+                  <Button
+                    onClick={() => onSegmentTransformReset(selectedSegment.id)}
+                    variant="outline"
+                    size="sm"
+                    className="flex-1 gap-1.5 bg-secondary text-foreground border-border/40 hover:bg-accent text-[10px] h-7"
+                  >
+                    <Move className="w-3 h-3" />
+                    Reset Transform
+                  </Button>
+                )}
+                {onSegmentDelete && videoSegments.length > 1 && (
+                  <Button
+                    onClick={() => onSegmentDelete(selectedSegment.id)}
+                    variant="destructive"
+                    size="sm"
+                    className="gap-1.5 bg-destructive/15 text-destructive border border-destructive/30 hover:bg-destructive/25 text-[10px] h-7"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Delete
+                  </Button>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
         <Accordion type="multiple" defaultValue={["effects", "background"]} className="space-y-1">
-          <AccordionItem value="effects" className="border-white/5 rounded-xl bg-white/[0.02] px-3">
+          <AccordionItem value="effects" className="border-border/30 rounded-xl bg-secondary/50 px-3">
             <AccordionTrigger className="py-2.5 hover:no-underline">
               <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-[#34B27B]" />
+                <Sparkles className="w-4 h-4 text-primary" />
                 <span className="text-xs font-medium">Video Effects</span>
               </div>
             </AccordionTrigger>
             <AccordionContent className="pb-3">
               <div className="grid grid-cols-2 gap-2 mb-3">
-                <div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
-                  <div className="text-[10px] font-medium text-slate-300">Motion Blur</div>
+                <div className="flex items-center justify-between p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="text-[10px] font-medium text-foreground/80">Motion Blur</div>
                   <Switch
                     checked={motionBlurEnabled}
                     onCheckedChange={onMotionBlurChange}
-                    className="data-[state=checked]:bg-[#34B27B] scale-90"
+                    className="scale-90"
                   />
                 </div>
-                <div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
-                  <div className="text-[10px] font-medium text-slate-300">Blur BG</div>
+                <div className="flex items-center justify-between p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="text-[10px] font-medium text-foreground/80">Blur BG</div>
                   <Switch
                     checked={showBlur}
                     onCheckedChange={onBlurChange}
-                    className="data-[state=checked]:bg-[#34B27B] scale-90"
+                    className="scale-90"
                   />
                 </div>
               </div>
               
               <div className="grid grid-cols-2 gap-2">
-                <div className="p-2 rounded-lg bg-white/5 border border-white/5">
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
                   <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] font-medium text-slate-300">Shadow</div>
-                    <span className="text-[10px] text-slate-500 font-mono">{Math.round(shadowIntensity * 100)}%</span>
+                    <div className="text-[10px] font-medium text-foreground/80">Shadow</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{Math.round(shadowIntensity * 100)}%</span>
                   </div>
                   <Slider
                     value={[shadowIntensity]}
@@ -361,13 +542,13 @@ export function SettingsPanel({
                     min={0}
                     max={1}
                     step={0.01}
-                    className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                    className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                   />
                 </div>
-                <div className="p-2 rounded-lg bg-white/5 border border-white/5">
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
                   <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] font-medium text-slate-300">Roundness</div>
-                    <span className="text-[10px] text-slate-500 font-mono">{borderRadius}px</span>
+                    <div className="text-[10px] font-medium text-foreground/80">Roundness</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{borderRadius}px</span>
                   </div>
                   <Slider
                     value={[borderRadius]}
@@ -375,13 +556,13 @@ export function SettingsPanel({
                     min={0}
                     max={16}
                     step={0.5}
-                    className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                    className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                   />
                 </div>
-                <div className="p-2 rounded-lg bg-white/5 border border-white/5">
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
                   <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] font-medium text-slate-300">Padding</div>
-                    <span className="text-[10px] text-slate-500 font-mono">{padding}%</span>
+                    <div className="text-[10px] font-medium text-foreground/80">Padding</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{padding}%</span>
                   </div>
                   <Slider
                     value={[padding]}
@@ -389,7 +570,7 @@ export function SettingsPanel({
                     min={0}
                     max={100}
                     step={1}
-                    className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                    className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                   />
                 </div>
               </div>
@@ -397,7 +578,7 @@ export function SettingsPanel({
               <Button
                 onClick={() => setShowCropDropdown(!showCropDropdown)}
                 variant="outline"
-                className="w-full mt-2 gap-1.5 bg-white/5 text-slate-200 border-white/10 hover:bg-white/10 hover:border-white/20 hover:text-white text-[10px] h-8 transition-all"
+                className="w-full mt-2 gap-1.5 bg-secondary text-foreground border-border/40 hover:bg-accent hover:border-border/60 hover:text-white text-[10px] h-8 transition-all"
               >
                 <Crop className="w-3 h-3" />
                 Crop Video
@@ -405,19 +586,37 @@ export function SettingsPanel({
             </AccordionContent>
           </AccordionItem>
 
-          <AccordionItem value="background" className="border-white/5 rounded-xl bg-white/[0.02] px-3">
+          {cursorHighlight && onCursorHighlightChange && (
+            <AccordionItem value="cursor" className="border-border/30 rounded-xl bg-secondary/50 px-3">
+              <AccordionTrigger className="py-2.5 hover:no-underline">
+                <div className="flex items-center gap-2">
+                  <MousePointer2 className="w-4 h-4 text-primary" />
+                  <span className="text-xs font-medium">Cursor</span>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="pb-3">
+                <CursorHighlightSettings
+                  config={cursorHighlight}
+                  onChange={onCursorHighlightChange}
+                  hasCursorData={hasCursorData}
+                />
+              </AccordionContent>
+            </AccordionItem>
+          )}
+
+          <AccordionItem value="background" className="border-border/30 rounded-xl bg-secondary/50 px-3">
             <AccordionTrigger className="py-2.5 hover:no-underline">
               <div className="flex items-center gap-2">
-                <Palette className="w-4 h-4 text-[#34B27B]" />
+                <Palette className="w-4 h-4 text-primary" />
                 <span className="text-xs font-medium">Background</span>
               </div>
             </AccordionTrigger>
             <AccordionContent className="pb-3">
               <Tabs defaultValue="image" className="w-full">
-                <TabsList className="mb-2 bg-white/5 border border-white/5 p-0.5 w-full grid grid-cols-3 h-7 rounded-lg">
-                  <TabsTrigger value="image" className="data-[state=active]:bg-[#34B27B] data-[state=active]:text-white text-slate-400 text-[10px] py-1 rounded-md transition-all">Image</TabsTrigger>
-                  <TabsTrigger value="color" className="data-[state=active]:bg-[#34B27B] data-[state=active]:text-white text-slate-400 text-[10px] py-1 rounded-md transition-all">Color</TabsTrigger>
-                  <TabsTrigger value="gradient" className="data-[state=active]:bg-[#34B27B] data-[state=active]:text-white text-slate-400 text-[10px] py-1 rounded-md transition-all">Gradient</TabsTrigger>
+                <TabsList className="mb-2 bg-secondary border border-border/30 p-0.5 w-full grid grid-cols-3 h-7 rounded-lg">
+                  <TabsTrigger value="image" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground text-[10px] py-1 rounded-md transition-all">Image</TabsTrigger>
+                  <TabsTrigger value="color" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground text-[10px] py-1 rounded-md transition-all">Color</TabsTrigger>
+                  <TabsTrigger value="gradient" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground text-muted-foreground text-[10px] py-1 rounded-md transition-all">Gradient</TabsTrigger>
                 </TabsList>
                 
                 <div className="max-h-[min(200px,25vh)] overflow-y-auto custom-scrollbar">
@@ -432,7 +631,7 @@ export function SettingsPanel({
                     <Button
                       onClick={() => fileInputRef.current?.click()}
                       variant="outline"
-                      className="w-full gap-2 bg-white/5 text-slate-200 border-white/10 hover:bg-[#34B27B] hover:text-white hover:border-[#34B27B] transition-all h-7 text-[10px]"
+                      className="w-full gap-2 bg-secondary text-foreground border-border/40 hover:bg-primary hover:text-white hover:border-primary transition-all h-7 text-[10px]"
                     >
                       <Upload className="w-3 h-3" />
                       Upload Custom
@@ -447,8 +646,8 @@ export function SettingsPanel({
                             className={cn(
                               "aspect-square w-9 h-9 rounded-md border-2 overflow-hidden cursor-pointer transition-all duration-200 relative group shadow-sm",
                               isSelected
-                                ? "border-[#34B27B] ring-1 ring-[#34B27B]/30"
-                                : "border-white/10 hover:border-[#34B27B]/40 opacity-80 hover:opacity-100 bg-white/5"
+                                ? "border-primary ring-1 ring-primary/30"
+                                : "border-border/40 hover:border-primary/40 opacity-80 hover:opacity-100 bg-secondary"
                             )}
                             style={{ backgroundImage: `url(${imageUrl})`, backgroundSize: "cover", backgroundPosition: "center" }}
                             onClick={() => onWallpaperChange(imageUrl)}
@@ -481,8 +680,8 @@ export function SettingsPanel({
                             className={cn(
                               "aspect-square w-9 h-9 rounded-md border-2 overflow-hidden cursor-pointer transition-all duration-200 shadow-sm",
                               isSelected
-                                ? "border-[#34B27B] ring-1 ring-[#34B27B]/30"
-                                : "border-white/10 hover:border-[#34B27B]/40 opacity-80 hover:opacity-100 bg-white/5"
+                                ? "border-primary ring-1 ring-primary/30"
+                                : "border-border/40 hover:border-primary/40 opacity-80 hover:opacity-100 bg-secondary"
                             )}
                             style={{ backgroundImage: `url(${path})`, backgroundSize: "cover", backgroundPosition: "center" }}
                             onClick={() => onWallpaperChange(path)}
@@ -518,8 +717,8 @@ export function SettingsPanel({
                           className={cn(
                             "aspect-square w-9 h-9 rounded-md border-2 overflow-hidden cursor-pointer transition-all duration-200 shadow-sm",
                             gradient === g 
-                              ? "border-[#34B27B] ring-1 ring-[#34B27B]/30" 
-                              : "border-white/10 hover:border-[#34B27B]/40 opacity-80 hover:opacity-100 bg-white/5"
+                              ? "border-primary ring-1 ring-primary/30" 
+                              : "border-border/40 hover:border-primary/40 opacity-80 hover:opacity-100 bg-secondary"
                           )}
                           style={{ background: g }}
                           aria-label={`Gradient ${idx + 1}`}
@@ -542,17 +741,17 @@ export function SettingsPanel({
             className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 animate-in fade-in duration-200"
             onClick={() => setShowCropDropdown(false)}
           />
-          <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[60] bg-[#09090b] rounded-2xl shadow-2xl border border-white/10 p-8 w-[90vw] max-w-5xl max-h-[90vh] overflow-auto animate-in zoom-in-95 duration-200">
+          <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[60] bg-background rounded-2xl shadow-2xl border border-border/40 p-8 w-[90vw] max-w-5xl max-h-[90vh] overflow-auto animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between mb-6">
               <div>
-                <span className="text-xl font-bold text-slate-200">Crop Video</span>
-                <p className="text-sm text-slate-400 mt-2">Drag on each side to adjust the crop area</p>
+                <span className="text-xl font-bold text-foreground">Crop Video</span>
+                <p className="text-sm text-muted-foreground mt-2">Drag on each side to adjust the crop area</p>
               </div>
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={() => setShowCropDropdown(false)}
-                className="hover:bg-white/10 text-slate-400 hover:text-white"
+                className="hover:bg-accent text-muted-foreground hover:text-white"
               >
                 <X className="w-5 h-5" />
               </Button>
@@ -567,7 +766,7 @@ export function SettingsPanel({
               <Button
                 onClick={() => setShowCropDropdown(false)}
                 size="lg"
-                className="bg-[#34B27B] hover:bg-[#34B27B]/90 text-white"
+                className="bg-primary hover:bg-primary/90 text-white"
               >
                 Done
               </Button>
@@ -576,15 +775,15 @@ export function SettingsPanel({
         </>
       )}
 
-      <div className="flex-shrink-0 p-4 pt-3 border-t border-white/5 bg-[#09090b]">
+      <div className="flex-shrink-0 p-4 pt-3 border-t border-border/30 bg-background">
         <div className="flex items-center gap-2 mb-3">
           <button
             onClick={() => onExportFormatChange?.('mp4')}
             className={cn(
               "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border transition-all text-xs font-medium",
               exportFormat === 'mp4'
-                ? "bg-[#34B27B]/10 border-[#34B27B]/50 text-white"
-                : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                ? "bg-primary/10 border-primary/50 text-white"
+                : "bg-secondary border-border/40 text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
           >
             <Film className="w-3.5 h-3.5" />
@@ -595,8 +794,8 @@ export function SettingsPanel({
             className={cn(
               "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg border transition-all text-xs font-medium",
               exportFormat === 'gif'
-                ? "bg-[#34B27B]/10 border-[#34B27B]/50 text-white"
-                : "bg-white/5 border-white/10 text-slate-400 hover:bg-white/10 hover:text-slate-200"
+                ? "bg-primary/10 border-primary/50 text-white"
+                : "bg-secondary border-border/40 text-muted-foreground hover:bg-accent hover:text-foreground"
             )}
           >
             <Image className="w-3.5 h-3.5" />
@@ -605,12 +804,12 @@ export function SettingsPanel({
         </div>
 
         {exportFormat === 'mp4' && (
-          <div className="mb-3 bg-white/5 border border-white/5 p-0.5 w-full grid grid-cols-3 h-7 rounded-lg">
+          <div className="mb-3 bg-secondary border border-border/30 p-0.5 w-full grid grid-cols-3 h-7 rounded-lg">
             <button
               onClick={() => onExportQualityChange?.('medium')}
               className={cn(
                 "rounded-md transition-all text-[10px] font-medium",
-                exportQuality === 'medium' ? "bg-white text-black" : "text-slate-400 hover:text-slate-200"
+                exportQuality === 'medium' ? "bg-white text-black" : "text-muted-foreground hover:text-foreground"
               )}
             >
               Low
@@ -619,7 +818,7 @@ export function SettingsPanel({
               onClick={() => onExportQualityChange?.('good')}
               className={cn(
                 "rounded-md transition-all text-[10px] font-medium",
-                exportQuality === 'good' ? "bg-white text-black" : "text-slate-400 hover:text-slate-200"
+                exportQuality === 'good' ? "bg-white text-black" : "text-muted-foreground hover:text-foreground"
               )}
             >
               Medium
@@ -628,7 +827,7 @@ export function SettingsPanel({
               onClick={() => onExportQualityChange?.('source')}
               className={cn(
                 "rounded-md transition-all text-[10px] font-medium",
-                exportQuality === 'source' ? "bg-white text-black" : "text-slate-400 hover:text-slate-200"
+                exportQuality === 'source' ? "bg-white text-black" : "text-muted-foreground hover:text-foreground"
               )}
             >
               High
@@ -639,28 +838,28 @@ export function SettingsPanel({
         {exportFormat === 'gif' && (
           <div className="mb-3 space-y-2">
             <div className="flex items-center gap-2">
-              <div className="flex-1 bg-white/5 border border-white/5 p-0.5 grid grid-cols-4 h-7 rounded-lg">
+              <div className="flex-1 bg-secondary border border-border/30 p-0.5 grid grid-cols-4 h-7 rounded-lg">
                 {GIF_FRAME_RATES.map((rate) => (
                   <button
                     key={rate.value}
                     onClick={() => onGifFrameRateChange?.(rate.value)}
                     className={cn(
                       "rounded-md transition-all text-[10px] font-medium",
-                      gifFrameRate === rate.value ? "bg-white text-black" : "text-slate-400 hover:text-slate-200"
+                      gifFrameRate === rate.value ? "bg-white text-black" : "text-muted-foreground hover:text-foreground"
                     )}
                   >
                     {rate.value}
                   </button>
                 ))}
               </div>
-              <div className="flex-1 bg-white/5 border border-white/5 p-0.5 grid grid-cols-3 h-7 rounded-lg">
+              <div className="flex-1 bg-secondary border border-border/30 p-0.5 grid grid-cols-3 h-7 rounded-lg">
                 {Object.entries(GIF_SIZE_PRESETS).map(([key, _preset]) => (
                   <button
                     key={key}
                     onClick={() => onGifSizePresetChange?.(key as GifSizePreset)}
                     className={cn(
                       "rounded-md transition-all text-[10px] font-medium",
-                      gifSizePreset === key ? "bg-white text-black" : "text-slate-400 hover:text-slate-200"
+                      gifSizePreset === key ? "bg-white text-black" : "text-muted-foreground hover:text-foreground"
                     )}
                   >
                     {key === 'original' ? 'Orig' : key.charAt(0).toUpperCase() + key.slice(1, 3)}
@@ -669,13 +868,13 @@ export function SettingsPanel({
               </div>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-slate-500">{gifOutputDimensions.width} × {gifOutputDimensions.height}px</span>
+              <span className="text-[10px] text-muted-foreground">{gifOutputDimensions.width} × {gifOutputDimensions.height}px</span>
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-slate-400">Loop</span>
+                <span className="text-[10px] text-muted-foreground">Loop</span>
                 <Switch
                   checked={gifLoop}
                   onCheckedChange={onGifLoopChange}
-                  className="data-[state=checked]:bg-[#34B27B] scale-75"
+                  className="scale-75"
                 />
               </div>
             </div>
@@ -686,34 +885,12 @@ export function SettingsPanel({
           type="button"
           size="lg"
           onClick={onExport}
-          className="w-full py-5 text-sm font-semibold flex items-center justify-center gap-2 bg-[#34B27B] text-white rounded-xl shadow-lg shadow-[#34B27B]/20 hover:bg-[#34B27B]/90 hover:scale-[1.02] active:scale-[0.98] transition-all duration-200"
+          className="w-full py-5 text-sm font-sans flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-lg shadow-lg shadow-primary/20 hover:bg-primary/90 hover:scale-[1.02] hover:-rotate-[0.5deg] active:scale-[0.98] transition-all duration-200"
         >
           <Download className="w-4 h-4" />
           Export {exportFormat === 'gif' ? 'GIF' : 'Video'}
         </Button>
 
-        <div className="flex gap-2 mt-3">
-          <button
-            type="button"
-            onClick={() => {
-              window.electronAPI?.openExternalUrl('https://github.com/siddharthvaddem/openscreen/issues/new/choose');
-            }}
-            className="flex-1 flex items-center justify-center gap-1.5 text-[10px] text-slate-500 hover:text-slate-300 py-1.5 transition-colors"
-          >
-            <Bug className="w-3 h-3 text-[#34B27B]" />
-            Report Bug
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              window.electronAPI?.openExternalUrl('https://github.com/siddharthvaddem/openscreen');
-            }}
-            className="flex-1 flex items-center justify-center gap-1.5 text-[10px] text-slate-500 hover:text-slate-300 py-1.5 transition-colors"
-          >
-            <Star className="w-3 h-3 text-yellow-400" />
-            Star on GitHub
-          </button>
-        </div>
       </div>
     </div>
   );

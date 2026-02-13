@@ -42,6 +42,26 @@ interface Window {
     getPlatform: () => Promise<string>
     hudOverlayHide: () => void;
     hudOverlayClose: () => void;
+    // Native recorder (cursor-free ScreenCaptureKit)
+    nativeRecorderAvailable: () => Promise<boolean>
+    startNativeRecording: (options: { displayId: string; micDeviceId?: string; micEnabled?: boolean }) => Promise<{ success: boolean; path?: string; error?: string }>
+    stopNativeRecording: () => Promise<{ success: boolean; path?: string; error?: string }>
+    // Cursor tracking
+    startCursorTracking: (sourceBounds?: { x: number; y: number; width: number; height: number }) => Promise<{ success: boolean }>
+    stopCursorTracking: () => Promise<{ success: boolean; frames: { t: number; x: number; y: number }[] }>
+    storeCursorData: (data: any, fileName: string) => Promise<{ success: boolean; path?: string }>
+    getCursorData: (videoFilePath: string) => Promise<{ success: boolean; frames: { t: number; x: number; y: number }[]; cursorFree?: boolean }>
+    // Microphone permission
+    getMicPermissionStatus: () => Promise<string>
+    requestMicPermission: () => Promise<boolean>
+    // Project file operations
+    saveProjectFile: (json: string, existingPath?: string) => Promise<{ success: boolean; path?: string; message?: string; cancelled?: boolean }>
+    openProjectFile: () => Promise<{ success: boolean; path?: string; content?: string; message?: string; cancelled?: boolean }>
+    fileExists: (filePath: string) => Promise<boolean>
+    addRecentProject: (projectPath: string) => Promise<{ success: boolean }>
+    getRecentProjects: () => Promise<string[]>
+    // Menu action listener
+    onMenuAction: (callback: (action: string) => void) => () => void
   }
 }
 

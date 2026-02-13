@@ -1,9 +1,11 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, systemPreferences } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { createHudOverlayWindow, createEditorWindow, createSourceSelectorWindow } from './windows'
 import { registerIpcHandlers } from './ipc/handlers'
+import { buildApplicationMenu } from './menu'
+import { initNativeRecorder } from './recording/nativeRecorder'
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -46,7 +48,7 @@ let tray: Tray | null = null
 let selectedSourceName = ''
 
 // Tray Icons
-const defaultTrayIcon = getTrayIcon('openscreen.png');
+const defaultTrayIcon = getTrayIcon('lumirec.png');
 const recordingTrayIcon = getTrayIcon('rec-button.png');
 
 function createWindow() {
@@ -69,7 +71,7 @@ function getTrayIcon(filename: string) {
 function updateTrayMenu(recording: boolean = false) {
   if (!tray) return;
   const trayIcon = recording ? recordingTrayIcon : defaultTrayIcon;
-  const trayToolTip = recording ? `Recording: ${selectedSourceName}` : "OpenScreen";
+  const trayToolTip = recording ? `Recording: ${selectedSourceName}` : "Lumirec";
   const menuTemplate = recording
     ? [
         {
@@ -145,8 +147,20 @@ app.whenReady().then(async () => {
     });
     createTray()
     updateTrayMenu()
+
+  // Request microphone permission on macOS (non-blocking)
+  if (process.platform === 'darwin') {
+    const micStatus = systemPreferences.getMediaAccessStatus('microphone')
+    if (micStatus === 'not-determined') {
+      systemPreferences.askForMediaAccess('microphone').catch(() => {})
+    }
+  }
+
   // Ensure recordings directory exists
   await ensureRecordingsDir()
+
+  // Initialize native recorder (non-blocking, sets availability flag)
+  await initNativeRecorder()
 
   registerIpcHandlers(
     createEditorWindowWrapper,
@@ -162,5 +176,9 @@ app.whenReady().then(async () => {
       }
     }
   )
+
+  // Set application menu with shortcuts
+  buildApplicationMenu(() => mainWindow)
+
   createWindow()
 })

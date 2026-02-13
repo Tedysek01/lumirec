@@ -2,7 +2,9 @@ import type React from "react";
 import { useEffect, useRef, useImperativeHandle, forwardRef, useState, useMemo, useCallback } from "react";
 import { getAssetPath } from "@/lib/assetPath";
 import { Application, Container, Sprite, Graphics, BlurFilter, Texture, VideoSource } from 'pixi.js';
-import { ZOOM_DEPTH_SCALES, type ZoomRegion, type ZoomFocus, type ZoomDepth, type TrimRegion, type AnnotationRegion } from "./types";
+import { ZOOM_DEPTH_SCALES, type ZoomRegion, type ZoomFocus, type ZoomDepth, type TrimRegion, type AnnotationRegion, type VideoSegment } from "./types";
+import { findSegmentAtPlaybackTime } from "@/lib/segmentUtils";
+import { resolveTransformAtTime } from "@/lib/keyframeInterpolation";
 import { DEFAULT_FOCUS, SMOOTHING_FACTOR, MIN_DELTA } from "./videoPlayback/constants";
 import { clamp01 } from "./videoPlayback/mathUtils";
 import { findDominantRegion } from "./videoPlayback/zoomRegionUtils";
@@ -13,6 +15,9 @@ import { applyZoomTransform } from "./videoPlayback/zoomTransform";
 import { createVideoEventHandlers } from "./videoPlayback/videoEventHandlers";
 import { type AspectRatio, formatAspectRatioForCSS } from "@/utils/aspectRatioUtils";
 import { AnnotationOverlay } from "./AnnotationOverlay";
+import type { CursorFrame, CursorHighlightConfig } from "@/lib/cursorTracker";
+import { CursorHighlightOverlay } from "./videoPlayback/cursorHighlightRenderer";
+import { computeTransitionState } from "./videoPlayback/transitionEngine";
 
 interface VideoPlaybackProps {
   videoPath: string;
@@ -41,6 +46,9 @@ interface VideoPlaybackProps {
   onSelectAnnotation?: (id: string | null) => void;
   onAnnotationPositionChange?: (id: string, position: { x: number; y: number }) => void;
   onAnnotationSizeChange?: (id: string, size: { width: number; height: number }) => void;
+  cursorData?: CursorFrame[];
+  cursorHighlight?: CursorHighlightConfig;
+  videoSegments?: VideoSegment[];
 }
 
 export interface VideoPlaybackRef {
@@ -80,6 +88,9 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   onSelectAnnotation,
   onAnnotationPositionChange,
   onAnnotationSizeChange,
+  cursorData = [],
+  cursorHighlight,
+  videoSegments = [],
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -113,6 +124,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   const trimRegionsRef = useRef<TrimRegion[]>([]);
   const motionBlurEnabledRef = useRef(motionBlurEnabled);
   const videoReadyRafRef = useRef<number | null>(null);
+  const cursorHighlightOverlayRef = useRef<CursorHighlightOverlay | null>(null);
+  const cursorDataRef = useRef<CursorFrame[]>([]);
+  const cursorHighlightRef = useRef<CursorHighlightConfig | undefined>(undefined);
+  const videoSegmentsRef = useRef<VideoSegment[]>([]);
 
   const clampFocusToStage = useCallback((focus: ZoomFocus, depth: ZoomDepth) => {
     return clampFocusToStageUtil(focus, depth, stageSizeRef.current);
@@ -324,6 +339,21 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   }, [motionBlurEnabled]);
 
   useEffect(() => {
+    cursorDataRef.current = cursorData;
+  }, [cursorData]);
+
+  useEffect(() => {
+    videoSegmentsRef.current = videoSegments;
+  }, [videoSegments]);
+
+  useEffect(() => {
+    cursorHighlightRef.current = cursorHighlight;
+    if (cursorHighlightOverlayRef.current && cursorHighlight) {
+      cursorHighlightOverlayRef.current.setConfig(cursorHighlight);
+    }
+  }, [cursorHighlight]);
+
+  useEffect(() => {
     if (!pixiReady || !videoReady) return;
 
     const app = appRef.current;
@@ -470,13 +500,24 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
       const videoContainer = new Container();
       videoContainerRef.current = videoContainer;
       cameraContainer.addChild(videoContainer);
-      
+
+      // Cursor highlight overlay - rendered on top of video inside cameraContainer
+      const cursorOverlay = new CursorHighlightOverlay(cameraContainer);
+      cursorHighlightOverlayRef.current = cursorOverlay;
+      if (cursorHighlightRef.current) {
+        cursorOverlay.setConfig(cursorHighlightRef.current);
+      }
+
       setPixiReady(true);
     })();
 
     return () => {
       mounted = false;
       setPixiReady(false);
+      if (cursorHighlightOverlayRef.current) {
+        cursorHighlightOverlayRef.current.destroy();
+        cursorHighlightOverlayRef.current = null;
+      }
       if (app && app.renderer) {
         app.destroy(true, { children: true, texture: true, textureSource: true });
       }
@@ -557,6 +598,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
       onPlayStateChange,
       onTimeUpdate,
       trimRegionsRef,
+      videoSegmentsRef,
     });
     
     video.addEventListener('play', handlePlay);
@@ -605,11 +647,33 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
     const videoContainer = videoContainerRef.current;
     if (!app || !videoSprite || !videoContainer) return;
 
-    const applyTransform = (motionIntensity: number) => {
+    const applyTransform = (motionIntensity: number, dominantRegion: ZoomRegion | null) => {
       const cameraContainer = cameraContainerRef.current;
       if (!cameraContainer) return;
 
       const state = animationStateRef.current;
+
+      // Compute transition state if a dominant region has transitions
+      const timeMs = currentTimeRef.current;
+      const transitionState = dominantRegion
+        ? computeTransitionState(dominantRegion, timeMs)
+        : undefined;
+
+      // Resolve segment transform at current playback time
+      let resolvedSegmentTransform: import('./types').SegmentTransform | undefined;
+      const segments = videoSegmentsRef.current;
+      if (segments.length > 0) {
+        const seg = findSegmentAtPlaybackTime(segments, timeMs);
+        if (seg) {
+          const relativeTime = timeMs - seg.timelineStartMs;
+          resolvedSegmentTransform = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
+          // Only pass if non-identity
+          const t = resolvedSegmentTransform;
+          if (t.rotation === 0 && t.scaleX === 1 && t.scaleY === 1 && t.positionX === 0 && t.positionY === 0) {
+            resolvedSegmentTransform = undefined;
+          }
+        }
+      }
 
       applyZoomTransform({
         cameraContainer,
@@ -622,6 +686,8 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         motionIntensity,
         isPlaying: isPlayingRef.current,
         motionBlurEnabled: motionBlurEnabledRef.current,
+        transitionState,
+        segmentTransform: resolvedSegmentTransform,
       });
     };
 
@@ -692,7 +758,18 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         Math.abs(nextFocusY - prevFocusY)
       );
 
-      applyTransform(motionIntensity);
+      applyTransform(motionIntensity, region);
+
+      // Update cursor highlight overlay
+      const cursorOverlay = cursorHighlightOverlayRef.current;
+      if (cursorOverlay && cursorDataRef.current.length > 0) {
+        const timeMs = currentTimeRef.current;
+        const bOff = baseOffsetRef.current;
+        const bScale = baseScaleRef.current;
+        const fullW = lockedVideoDimensionsRef.current?.width || videoRef.current?.videoWidth || 0;
+        const fullH = lockedVideoDimensionsRef.current?.height || videoRef.current?.videoHeight || 0;
+        cursorOverlay.update(cursorDataRef.current, timeMs, fullW * bScale, fullH * bScale, bOff.x, bOff.y);
+      }
     };
 
     app.ticker.add(ticker);
@@ -820,7 +897,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         >
           <div
             ref={focusIndicatorRef}
-            className="absolute rounded-md border border-[#34B27B]/80 bg-[#34B27B]/20 shadow-[0_0_0_1px_rgba(52,178,123,0.35)]"
+            className="absolute rounded-md border border-primary/80 bg-primary/20 shadow-[0_0_0_1px_rgba(109,213,168,0.35)]"
             style={{ display: 'none', pointerEvents: 'none' }}
           />
           {(() => {

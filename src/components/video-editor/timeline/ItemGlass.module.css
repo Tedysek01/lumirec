@@ -1,10 +1,10 @@
+/* Zoom items — primary blue */
 .glassGreen {
   position: relative;
-  border-radius: 8px;
-  -corner-smoothing: antialiased;
-  background: rgba(52, 178, 123, 0.15);
-  border: 1px solid rgba(52, 178, 123, 0.3);
-  box-shadow: 0 2px 12px 0 rgba(52, 178, 123, 0.1) inset;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  box-shadow: 0 2px 12px 0 rgba(59, 130, 246, 0.1) inset;
   margin: 2px 0;
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
@@ -12,22 +12,22 @@
 }
 
 .glassGreen:hover {
-  background: rgba(52, 178, 123, 0.25);
-  border-color: rgba(52, 178, 123, 0.5);
-  box-shadow: 0 4px 20px 0 rgba(52, 178, 123, 0.2) inset;
+  background: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 4px 20px 0 rgba(59, 130, 246, 0.2) inset;
 }
 
 .glassGreen.selected {
-  background: rgba(52, 178, 123, 0.35);
-  border-color: #34B27B;
-  box-shadow: 0 0 0 1px #34B27B, 0 4px 20px 0 rgba(52, 178, 123, 0.3) inset;
+  background: rgba(59, 130, 246, 0.35);
+  border-color: #3B82F6;
+  box-shadow: 0 0 0 1px #3B82F6, 0 4px 20px 0 rgba(59, 130, 246, 0.3) inset;
   z-index: 10;
 }
 
+/* Trim items — destructive red */
 .glassRed {
   position: relative;
-  border-radius: 8px;
-  -corner-smoothing: antialiased;
+  border-radius: 6px;
   background: rgba(239, 68, 68, 0.15);
   border: 1px solid rgba(239, 68, 68, 0.3);
   box-shadow: 0 2px 12px 0 rgba(239, 68, 68, 0.1) inset;
@@ -45,18 +45,18 @@
 
 .glassRed.selected {
   background: rgba(239, 68, 68, 0.35);
-  border-color: #ef4444;
-  box-shadow: 0 0 0 1px #ef4444, 0 4px 20px 0 rgba(239, 68, 68, 0.3) inset;
+  border-color: #EF4444;
+  box-shadow: 0 0 0 1px #EF4444, 0 4px 20px 0 rgba(239, 68, 68, 0.3) inset;
   z-index: 10;
 }
 
+/* Annotation items — accent amber */
 .glassYellow {
   position: relative;
-  border-radius: 8px;
-  -corner-smoothing: antialiased;
-  background: rgba(180, 160, 70, 0.15);
-  border: 1px solid rgba(180, 160, 70, 0.3);
-  box-shadow: 0 2px 12px 0 rgba(180, 160, 70, 0.1) inset;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  box-shadow: 0 2px 12px 0 rgba(245, 158, 11, 0.1) inset;
   margin: 2px 0;
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
@@ -64,15 +64,68 @@
 }
 
 .glassYellow:hover {
-  background: rgba(180, 160, 70, 0.25);
-  border-color: rgba(180, 160, 70, 0.5);
-  box-shadow: 0 4px 20px 0 rgba(180, 160, 70, 0.2) inset;
+  background: rgba(245, 158, 11, 0.25);
+  border-color: rgba(245, 158, 11, 0.5);
+  box-shadow: 0 4px 20px 0 rgba(245, 158, 11, 0.2) inset;
 }
 
 .glassYellow.selected {
-  background: rgba(180, 160, 70, 0.35);
-  border-color: #B4A046;
-  box-shadow: 0 0 0 1px #B4A046, 0 4px 20px 0 rgba(180, 160, 70, 0.3) inset;
+  background: rgba(245, 158, 11, 0.35);
+  border-color: #F59E0B;
+  box-shadow: 0 0 0 1px #F59E0B, 0 4px 20px 0 rgba(245, 158, 11, 0.3) inset;
+  z-index: 10;
+}
+
+/* Zoom overlay items — primary blue (lighter) */
+.glassGreenOverlay {
+  position: relative;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.10);
+  border: 1px solid rgba(59, 130, 246, 0.20);
+  box-shadow: 0 2px 12px 0 rgba(59, 130, 246, 0.05) inset;
+  margin: 2px 0;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glassGreenOverlay:hover {
+  background: rgba(59, 130, 246, 0.18);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 4px 20px 0 rgba(59, 130, 246, 0.15) inset;
+}
+
+.glassGreenOverlay.selected {
+  background: rgba(59, 130, 246, 0.28);
+  border-color: #3B82F6;
+  box-shadow: 0 0 0 1px #3B82F6, 0 4px 20px 0 rgba(59, 130, 246, 0.2) inset;
+  z-index: 10;
+}
+
+/* Video segment items — primary blue */
+.glassBlue {
+  position: relative;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.18);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  box-shadow: 0 2px 12px 0 rgba(59, 130, 246, 0.1) inset;
+  margin: 2px 0;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.glassBlue:hover {
+  background: rgba(59, 130, 246, 0.28);
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 4px 20px 0 rgba(59, 130, 246, 0.2) inset;
+}
+
+.glassBlue.selected {
+  background: rgba(59, 130, 246, 0.35);
+  border-color: #3B82F6;
+  box-shadow: 0 0 0 1px #3B82F6, 0 4px 20px 0 rgba(59, 130, 246, 0.3) inset;
   z-index: 10;
 }
 
@@ -87,8 +140,12 @@
   transition: opacity 0.2s, width 0.2s;
 }
 
+.glassBlue:hover .zoomEndCap,
+.glassBlue.selected .zoomEndCap,
 .glassGreen:hover .zoomEndCap,
 .glassGreen.selected .zoomEndCap,
+.glassGreenOverlay:hover .zoomEndCap,
+.glassGreenOverlay.selected .zoomEndCap,
 .glassRed:hover .zoomEndCap,
 .glassRed.selected .zoomEndCap,
 .glassYellow:hover .zoomEndCap,
@@ -99,13 +156,13 @@
 .zoomEndCap.left {
   left: 0;
   cursor: ew-resize;
-  border-top-left-radius: 7px;
-  border-bottom-left-radius: 7px;
+  border-top-left-radius: 5px;
+  border-bottom-left-radius: 5px;
 }
 
 .zoomEndCap.right {
   right: 0;
   cursor: ew-resize;
-  border-top-right-radius: 7px;
-  border-bottom-right-radius: 7px;
+  border-top-right-radius: 5px;
+  border-bottom-right-radius: 5px;
 }

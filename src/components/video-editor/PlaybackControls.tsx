@@ -50,7 +50,7 @@ export default function PlaybackControls({
         )}
       </Button>
       
-      <span className="text-[9px] font-medium text-slate-300 tabular-nums w-[30px] text-right">
+      <span className="text-[9px] font-mono font-medium text-foreground/80 tabular-nums w-[30px] text-right">
         {formatTime(currentTime)}
       </span>
       
@@ -58,7 +58,7 @@ export default function PlaybackControls({
         {/* Custom Track Background */}
         <div className="absolute left-0 right-0 h-0.5 bg-white/10 rounded-full overflow-hidden">
           <div 
-            className="h-full bg-[#34B27B] rounded-full"
+            className="h-full bg-primary rounded-full"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -84,7 +84,7 @@ export default function PlaybackControls({
         />
       </div>
       
-      <span className="text-[9px] font-medium text-slate-500 tabular-nums w-[30px]">
+      <span className="text-[9px] font-mono font-medium text-muted-foreground tabular-nums w-[30px]">
         {formatTime(duration)}
       </span>
     </div>

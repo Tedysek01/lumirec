@@ -5,18 +5,70 @@ export interface ZoomFocus {
   cy: number; // normalized vertical center (0-1)
 }
 
+export type TransitionType = 'none' | 'fade' | 'slide-left' | 'slide-right' | 'zoom-in' | 'zoom-out';
+
+export interface TransitionConfig {
+  type: TransitionType;
+  durationMs: number; // 100-1000ms
+}
+
+export const DEFAULT_TRANSITION_CONFIG: TransitionConfig = {
+  type: 'none',
+  durationMs: 300,
+};
+
 export interface ZoomRegion {
   id: string;
   startMs: number;
   endMs: number;
   depth: ZoomDepth;
   focus: ZoomFocus;
+  enterTransition?: TransitionConfig;
+  exitTransition?: TransitionConfig;
 }
 
 export interface TrimRegion {
   id: string;
   startMs: number;
   endMs: number;
+}
+
+// --- NLE Video Segment types ---
+
+export interface SegmentTransform {
+  rotation: number;    // degrees
+  scaleX: number;      // 1.0 = 100%
+  scaleY: number;
+  positionX: number;   // px offset from center
+  positionY: number;
+}
+
+export const DEFAULT_SEGMENT_TRANSFORM: SegmentTransform = {
+  rotation: 0,
+  scaleX: 1,
+  scaleY: 1,
+  positionX: 0,
+  positionY: 0,
+};
+
+export type TransformProperty = 'rotation' | 'scaleX' | 'scaleY' | 'positionX' | 'positionY';
+export type EasingType = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out';
+
+export interface PropertyKeyframe {
+  id: string;
+  timeMs: number;      // relative to segment start
+  property: TransformProperty;
+  value: number;
+  easing: EasingType;
+}
+
+export interface VideoSegment {
+  id: string;
+  sourceStartMs: number;  // where in the original recording this segment starts
+  sourceEndMs: number;    // where in the original recording this segment ends
+  timelineStartMs: number; // position on the output timeline
+  transform: SegmentTransform;
+  keyframes: PropertyKeyframe[];
 }
 
 export type AnnotationType = 'text' | 'image' | 'figure';
@@ -88,7 +140,7 @@ export const DEFAULT_ANNOTATION_STYLE: AnnotationTextStyle = {
 
 export const DEFAULT_FIGURE_DATA: FigureData = {
   arrowDirection: 'right',
-  color: '#34B27B',
+  color: '#3B82F6',
   strokeWidth: 4,
 };
 

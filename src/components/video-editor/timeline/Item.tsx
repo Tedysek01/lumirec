@@ -13,6 +13,7 @@ interface ItemProps {
   onSelect?: () => void;
   zoomDepth?: number;
   variant?: 'zoom' | 'trim' | 'annotation';
+  overlay?: boolean;
 }
 
 // Map zoom depth to multiplier labels
@@ -25,14 +26,15 @@ const ZOOM_LABELS: Record<number, string> = {
   6: "5×",
 };
 
-export default function Item({ 
-  id, 
-  span, 
-  rowId, 
-  isSelected = false, 
-  onSelect, 
+export default function Item({
+  id,
+  span,
+  rowId,
+  isSelected = false,
+  onSelect,
   zoomDepth = 1,
   variant = 'zoom',
+  overlay = false,
   children
 }: ItemProps) {
   const { setNodeRef, attributes, listeners, itemStyle, itemContentStyle } = useItem({
@@ -43,23 +45,25 @@ export default function Item({
 
   const isZoom = variant === 'zoom';
   const isTrim = variant === 'trim';
-  
-  const glassClass = isZoom 
-    ? glassStyles.glassGreen 
-    : isTrim 
-    ? glassStyles.glassRed 
+
+  const glassClass = isZoom
+    ? (overlay ? glassStyles.glassGreenOverlay : glassStyles.glassGreen)
+    : isTrim
+    ? glassStyles.glassRed
     : glassStyles.glassYellow;
     
-  const endCapColor = isZoom 
-    ? '#21916A' 
-    : isTrim 
-    ? '#ef4444' 
-    : '#B4A046';
+  const endCapColor = isZoom
+    ? '#2563EB'
+    : isTrim
+    ? '#DC2626'
+    : '#D97706';
+
+  const itemHeight = overlay ? 28 : 40;
 
   return (
     <div
       ref={setNodeRef}
-      style={itemStyle}
+      style={overlay ? { ...itemStyle, pointerEvents: 'auto' as const } : itemStyle}
       {...listeners}
       {...attributes}
       onPointerDownCapture={() => onSelect?.()}
@@ -72,7 +76,7 @@ export default function Item({
             "w-full h-full overflow-hidden flex items-center justify-center gap-1.5 cursor-grab active:cursor-grabbing relative",
             isSelected && glassStyles.selected
           )}
-          style={{ height: 40, color: '#fff' }}
+          style={{ height: itemHeight, color: '#fff' }}
           onClick={(event) => {
             event.stopPropagation();
             onSelect?.();

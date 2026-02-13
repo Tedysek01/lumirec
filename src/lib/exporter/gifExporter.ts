@@ -2,7 +2,9 @@ import GIF from 'gif.js';
 import type { ExportProgress, ExportResult, GifFrameRate, GifSizePreset, GIF_SIZE_PRESETS } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
-import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion } from '@/components/video-editor/types';
+import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
+import { computeGapRegions } from '@/lib/segmentUtils';
 
 const GIF_WORKER_URL = new URL('gif.js/dist/gif.worker.js', import.meta.url).toString();
 
@@ -27,6 +29,9 @@ interface GifExporterConfig {
   annotationRegions?: AnnotationRegion[];
   previewWidth?: number;
   previewHeight?: number;
+  cursorData?: CursorFrame[];
+  cursorHighlight?: CursorHighlightConfig;
+  videoSegments?: VideoSegment[];
   onProgress?: (progress: ExportProgress) => void;
 }
 
@@ -75,36 +80,41 @@ export class GifExporter {
     this.config = config;
   }
 
-  /**
-   * Calculate the total duration excluding trim regions (in seconds)
-   */
-  private getEffectiveDuration(totalDuration: number): number {
-    const trimRegions = this.config.trimRegions || [];
-    const totalTrimDuration = trimRegions.reduce((sum, region) => {
-      return sum + (region.endMs - region.startMs) / 1000;
-    }, 0);
-    return totalDuration - totalTrimDuration;
+  // Build a unified list of skip regions: trim regions + segment gaps
+  private getSkipRegions(totalDurationMs: number): { startMs: number; endMs: number }[] {
+    const trimRegions = (this.config.trimRegions || []).map(r => ({ startMs: r.startMs, endMs: r.endMs }));
+    const segments = this.config.videoSegments;
+    const gaps = segments && segments.length > 0
+      ? computeGapRegions(segments, totalDurationMs)
+      : [];
+    return [...trimRegions, ...gaps].sort((a, b) => a.startMs - b.startMs);
   }
 
   /**
-   * Map effective time (excluding trims) to source time (including trims)
+   * Calculate the total duration excluding skip regions (in seconds)
+   */
+  private getEffectiveDuration(totalDuration: number): number {
+    const skipRegions = this.getSkipRegions(Math.round(totalDuration * 1000));
+    const totalSkipDuration = skipRegions.reduce((sum, region) => {
+      return sum + (region.endMs - region.startMs) / 1000;
+    }, 0);
+    return totalDuration - totalSkipDuration;
+  }
+
+  /**
+   * Map effective time (excluding skips) to source time (including skips)
    */
   private mapEffectiveToSourceTime(effectiveTimeMs: number): number {
-    const trimRegions = this.config.trimRegions || [];
-    // Sort trim regions by start time
-    const sortedTrims = [...trimRegions].sort((a, b) => a.startMs - b.startMs);
+    const skipRegions = this.getSkipRegions(Infinity);
 
     let sourceTimeMs = effectiveTimeMs;
 
-    for (const trim of sortedTrims) {
-      // If the source time hasn't reached this trim region yet, we're done
-      if (sourceTimeMs < trim.startMs) {
+    for (const skip of skipRegions) {
+      if (sourceTimeMs < skip.startMs) {
         break;
       }
-
-      // Add the duration of this trim region to the source time
-      const trimDuration = trim.endMs - trim.startMs;
-      sourceTimeMs += trimDuration;
+      const skipDuration = skip.endMs - skip.startMs;
+      sourceTimeMs += skipDuration;
     }
 
     return sourceTimeMs;
@@ -137,6 +147,8 @@ export class GifExporter {
         annotationRegions: this.config.annotationRegions,
         previewWidth: this.config.previewWidth,
         previewHeight: this.config.previewHeight,
+        cursorData: this.config.cursorData,
+        cursorHighlight: this.config.cursorHighlight,
       });
       await this.renderer.initialize();
 

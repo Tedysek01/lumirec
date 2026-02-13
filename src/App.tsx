@@ -8,6 +8,9 @@ export default function App() {
   const [windowType, setWindowType] = useState('');
 
   useEffect(() => {
+    // Activate dark mode for sketch theme
+    document.documentElement.classList.add('dark');
+
     const params = new URLSearchParams(window.location.search);
     const type = params.get('windowType') || '';
     setWindowType(type);
@@ -23,18 +26,24 @@ export default function App() {
     });
   }, []);
 
-  switch (windowType) {
-    case 'hud-overlay':
-      return <LaunchWindow />;
-    case 'source-selector':
-      return <SourceSelector />;
-    case 'editor':
-      return <VideoEditor />;
-      default:
-      return (
-        <div className="w-full h-full bg-background text-foreground">
-          <h1>Openscreen</h1>
-        </div>
-      );
-  }
+  return (
+    <>
+      {(() => {
+        switch (windowType) {
+          case 'hud-overlay':
+            return <LaunchWindow />;
+          case 'source-selector':
+            return <SourceSelector />;
+          case 'editor':
+            return <VideoEditor />;
+          default:
+            return (
+              <div className="w-full h-full bg-background text-foreground font-sans flex items-center justify-center">
+                <h1 className="font-display text-3xl font-bold tracking-tight text-foreground">Lumirec</h1>
+              </div>
+            );
+        }
+      })()}
+    </>
+  );
 }

@@ -2,7 +2,10 @@ import type { ExportConfig, ExportProgress, ExportResult } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
-import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion } from '@/components/video-editor/types';
+import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
+import { extractAudioBuffer, computeAudioRangesAfterTrim } from './audioExtractor';
+import { computeGapRegions } from '@/lib/segmentUtils';
 
 interface VideoExporterConfig extends ExportConfig {
   videoUrl: string;
@@ -20,6 +23,10 @@ interface VideoExporterConfig extends ExportConfig {
   annotationRegions?: AnnotationRegion[];
   previewWidth?: number;
   previewHeight?: number;
+  cursorData?: CursorFrame[];
+  cursorHighlight?: CursorHighlightConfig;
+  videoSegments?: VideoSegment[];
+  includeAudio?: boolean;
   onProgress?: (progress: ExportProgress) => void;
 }
 
@@ -43,31 +50,40 @@ export class VideoExporter {
     this.config = config;
   }
 
-  // Calculate the total duration excluding trim regions (in seconds)
+  // Build a unified list of skip regions: trim regions + segment gaps
+  private getSkipRegions(totalDurationMs: number): { startMs: number; endMs: number }[] {
+    const trimRegions = (this.config.trimRegions || []).map(r => ({ startMs: r.startMs, endMs: r.endMs }));
+    const segments = this.config.videoSegments;
+    const gaps = segments && segments.length > 0
+      ? computeGapRegions(segments, totalDurationMs)
+      : [];
+    // Merge and sort by start time
+    return [...trimRegions, ...gaps].sort((a, b) => a.startMs - b.startMs);
+  }
+
+  // Calculate the total duration excluding skip regions (in seconds)
   private getEffectiveDuration(totalDuration: number): number {
-    const trimRegions = this.config.trimRegions || [];
-    const totalTrimDuration = trimRegions.reduce((sum, region) => {
+    const skipRegions = this.getSkipRegions(Math.round(totalDuration * 1000));
+    const totalSkipDuration = skipRegions.reduce((sum, region) => {
       return sum + (region.endMs - region.startMs) / 1000;
     }, 0);
-    return totalDuration - totalTrimDuration;
+    return totalDuration - totalSkipDuration;
   }
 
   private mapEffectiveToSourceTime(effectiveTimeMs: number): number {
-    const trimRegions = this.config.trimRegions || [];
-    // Sort trim regions by start time
-    const sortedTrims = [...trimRegions].sort((a, b) => a.startMs - b.startMs);
+    const skipRegions = this.getSkipRegions(Infinity);
 
     let sourceTimeMs = effectiveTimeMs;
 
-    for (const trim of sortedTrims) {
-      // If the source time hasn't reached this trim region yet, we're done
-      if (sourceTimeMs < trim.startMs) {
+    for (const skip of skipRegions) {
+      // If the source time hasn't reached this skip region yet, we're done
+      if (sourceTimeMs < skip.startMs) {
         break;
       }
 
-      // Add the duration of this trim region to the source time
-      const trimDuration = trim.endMs - trim.startMs;
-      sourceTimeMs += trimDuration;
+      // Add the duration of this skip region to the source time
+      const skipDuration = skip.endMs - skip.startMs;
+      sourceTimeMs += skipDuration;
     }
 
     return sourceTimeMs;
@@ -100,14 +116,32 @@ export class VideoExporter {
         annotationRegions: this.config.annotationRegions,
         previewWidth: this.config.previewWidth,
         previewHeight: this.config.previewHeight,
+        cursorData: this.config.cursorData,
+        cursorHighlight: this.config.cursorHighlight,
       });
       await this.renderer.initialize();
 
       // Initialize video encoder
       await this.initializeEncoder();
 
-      // Initialize muxer
-      this.muxer = new VideoMuxer(this.config, false);
+      // Detect audio in source and initialize muxer accordingly
+      let sourceAudioBuffer: AudioBuffer | null = null;
+      const includeAudio = this.config.includeAudio ?? false;
+      if (includeAudio) {
+        try {
+          const response = await fetch(this.config.videoUrl);
+          const blob = await response.blob();
+          sourceAudioBuffer = await extractAudioBuffer(blob);
+          if (sourceAudioBuffer) {
+            console.log('[VideoExporter] Audio track detected:', sourceAudioBuffer.numberOfChannels, 'ch,', sourceAudioBuffer.sampleRate, 'Hz');
+          }
+        } catch (err) {
+          console.warn('[VideoExporter] Failed to extract audio:', err);
+        }
+      }
+
+      const hasAudio = sourceAudioBuffer !== null && sourceAudioBuffer.length > 0;
+      this.muxer = new VideoMuxer(this.config, hasAudio);
       await this.muxer.initialize();
 
       // Get the video element for frame extraction
@@ -218,8 +252,17 @@ export class VideoExporter {
         await this.encoder.flush();
       }
 
-      // Wait for all muxing operations to complete
+      // Wait for all video muxing operations to complete
       await Promise.all(this.muxingPromises);
+
+      // Encode and mux audio if present
+      if (hasAudio && sourceAudioBuffer && this.muxer) {
+        try {
+          await this.encodeAndMuxAudio(sourceAudioBuffer, this.muxer);
+        } catch (err) {
+          console.warn('[VideoExporter] Audio encoding failed, exporting without audio:', err);
+        }
+      }
 
       // Finalize muxer and get output blob
       const blob = await this.muxer!.finalize();
@@ -331,6 +374,126 @@ export class VideoExporter {
       
       this.encoder.configure(encoderConfig);
     }
+  }
+
+  /**
+   * Encode audio from AudioBuffer and add to muxer, respecting trim regions.
+   */
+  private async encodeAndMuxAudio(audioBuffer: AudioBuffer, muxer: VideoMuxer): Promise<void> {
+    const sampleRate = audioBuffer.sampleRate;
+    const channels = audioBuffer.numberOfChannels;
+
+    // Compute which sample ranges to include (after trim)
+    const ranges = computeAudioRangesAfterTrim(
+      audioBuffer.length,
+      sampleRate,
+      this.config.trimRegions || [],
+    );
+
+    // Compute total samples after trim
+    const totalSamples = ranges.reduce((sum, [start, end]) => sum + (end - start), 0);
+    if (totalSamples === 0) return;
+
+    // Create trimmed audio buffer
+    const offlineCtx = new OfflineAudioContext(channels, totalSamples, sampleRate);
+    let offset = 0;
+    for (const [start, end] of ranges) {
+      const length = end - start;
+      const tempBuffer = offlineCtx.createBuffer(channels, length, sampleRate);
+      for (let ch = 0; ch < channels; ch++) {
+        const srcData = audioBuffer.getChannelData(ch);
+        const dstData = tempBuffer.getChannelData(ch);
+        dstData.set(srcData.subarray(start, end));
+      }
+      const source = offlineCtx.createBufferSource();
+      source.buffer = tempBuffer;
+      source.connect(offlineCtx.destination);
+      source.start(offset / sampleRate);
+      offset += length;
+    }
+
+    const trimmedBuffer = await offlineCtx.startRendering();
+
+    // Encode using AudioEncoder (AAC for universal MP4 compatibility)
+    const audioPromises: Promise<void>[] = [];
+    let isFirstAudioChunk = true;
+
+    const audioEncoder = new AudioEncoder({
+      output: (chunk, meta) => {
+        const first = isFirstAudioChunk;
+        isFirstAudioChunk = false;
+
+        const promise = (async () => {
+          try {
+            if (first) {
+              const audioMeta: EncodedAudioChunkMetadata = {
+                decoderConfig: {
+                  codec: 'mp4a.40.2',
+                  sampleRate,
+                  numberOfChannels: channels,
+                  ...(meta?.decoderConfig?.description ? { description: meta.decoderConfig.description } : {}),
+                },
+              };
+              await muxer.addAudioChunk(chunk, audioMeta);
+            } else {
+              await muxer.addAudioChunk(chunk, meta);
+            }
+          } catch (err) {
+            console.warn('[VideoExporter] Audio muxing error:', err);
+          }
+        })();
+        audioPromises.push(promise);
+      },
+      error: (err) => {
+        console.error('[VideoExporter] AudioEncoder error:', err);
+      },
+    });
+
+    audioEncoder.configure({
+      codec: 'mp4a.40.2',
+      sampleRate,
+      numberOfChannels: channels,
+      bitrate: 128_000,
+    });
+
+    // Feed audio data in 1024-sample frames (standard AAC frame size)
+    const chunkSize = 1024;
+    const totalAudioSamples = trimmedBuffer.length;
+    let sampleOffset = 0;
+
+    while (sampleOffset < totalAudioSamples) {
+      const remaining = totalAudioSamples - sampleOffset;
+      const frameSamples = Math.min(chunkSize, remaining);
+
+      // Create planar float32 data for AudioData
+      const planarData = new Float32Array(frameSamples * channels);
+      for (let ch = 0; ch < channels; ch++) {
+        const channelData = trimmedBuffer.getChannelData(ch);
+        planarData.set(
+          channelData.subarray(sampleOffset, sampleOffset + frameSamples),
+          ch * frameSamples,
+        );
+      }
+
+      const audioData = new AudioData({
+        format: 'f32-planar',
+        sampleRate,
+        numberOfFrames: frameSamples,
+        numberOfChannels: channels,
+        timestamp: Math.round((sampleOffset / sampleRate) * 1_000_000), // microseconds
+        data: planarData,
+      });
+
+      audioEncoder.encode(audioData);
+      audioData.close();
+      sampleOffset += frameSamples;
+    }
+
+    await audioEncoder.flush();
+    audioEncoder.close();
+    await Promise.all(audioPromises);
+
+    console.log('[VideoExporter] Audio encoding complete');
   }
 
   cancel(): void {
