@@ -1,5 +1,4 @@
 import { Container, BlurFilter } from 'pixi.js';
-import type { TransitionState } from './transitionEngine';
 import type { SegmentTransform } from '../types';
 
 interface TransformParams {
@@ -13,7 +12,6 @@ interface TransformParams {
   motionIntensity: number;
   isPlaying: boolean;
   motionBlurEnabled?: boolean;
-  transitionState?: TransitionState;
   segmentTransform?: SegmentTransform;
 }
 
@@ -28,7 +26,6 @@ export function applyZoomTransform({
   motionIntensity,
   isPlaying,
   motionBlurEnabled = false,
-  transitionState,
   segmentTransform,
 }: TransformParams) {
   if (
@@ -40,10 +37,7 @@ export function applyZoomTransform({
     return;
   }
 
-  // Apply transition scale multiplier
-  const finalScale = transitionState
-    ? zoomScale * transitionState.scaleMul
-    : zoomScale;
+  const finalScale = zoomScale;
 
   // The focus point in stage coordinates (where the user clicked/selected)
   const focusStagePxX = focusX * stageSize.width;
@@ -62,20 +56,8 @@ export function applyZoomTransform({
   let cameraX = stageCenterX - focusStagePxX * finalScale;
   let cameraY = stageCenterY - focusStagePxY * finalScale;
 
-  // Apply transition offset (in stage-space units)
-  if (transitionState) {
-    cameraX += transitionState.offsetX * stageSize.width;
-    cameraY += transitionState.offsetY * stageSize.height;
-  }
-
   cameraContainer.position.set(cameraX, cameraY);
-
-  // Apply transition opacity
-  if (transitionState) {
-    cameraContainer.alpha = transitionState.opacity;
-  } else {
-    cameraContainer.alpha = 1;
-  }
+  cameraContainer.alpha = 1;
 
   // Apply per-segment transform (rotation, additional scale, position offset)
   if (segmentTransform) {

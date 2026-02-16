@@ -1,6 +1,6 @@
 
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
@@ -13,22 +13,43 @@ import { ExportDialog } from "./ExportDialog";
 
 import type { Span } from "dnd-timeline";
 import {
-  DEFAULT_ZOOM_DEPTH,
-  clampFocusToDepth,
   DEFAULT_ANNOTATION_POSITION,
   DEFAULT_ANNOTATION_SIZE,
   DEFAULT_ANNOTATION_STYLE,
   DEFAULT_FIGURE_DATA,
   DEFAULT_SEGMENT_TRANSFORM,
+  DEFAULT_SPOTLIGHT_REGION,
+  DEFAULT_TRANSITION_CONFIG,
+  ZOOM_DEPTH_SCALES,
   type ZoomDepth,
   type ZoomFocus,
   type ZoomRegion,
   type TrimRegion,
   type AnnotationRegion,
+  type SpotlightRegion,
   type VideoSegment,
   type FigureData,
-  type TransitionConfig,
 } from "./types";
+import { generateZoomKeyframes } from "@/lib/zoomKeyframeGenerator";
+import {
+  resolveTransformAtTime,
+  findNearestKeyframeTime,
+  upsertKeyframe,
+  upsertAllPropertiesAtTime,
+  removeKeyframesAtTime,
+  moveKeyframesAtTime,
+  isZoomKeyframe,
+  getUniquePanPointTimes,
+  getLastPanPointFocus,
+  getFirstPanPointFocus,
+  clampToPanRange,
+  syncZoomBoundaries,
+  resolveSpotlightAtTime,
+  getUniqueSpotlightPointTimes,
+  upsertAllSpotlightPropertiesAtTime,
+  upsertSpotlightKeyframe,
+} from "@/lib/keyframeInterpolation";
+import type { SpotlightAnimProperty } from "./types";
 import {
   createInitialSegment,
   splitSegment,
@@ -40,7 +61,8 @@ import {
   getTotalTimelineDuration,
 } from "@/lib/segmentUtils";
 import { VideoExporter, GifExporter, type ExportProgress, type ExportQuality, type ExportSettings, type ExportFormat, type GifFrameRate, type GifSizePreset, GIF_SIZE_PRESETS, calculateOutputDimensions } from "@/lib/exporter";
-import { getAspectRatioValue } from "@/utils/aspectRatioUtils";
+import { type AspectRatio, getAspectRatioValue } from "@/utils/aspectRatioUtils";
+import { remapEditorStateForAspectRatio } from "@/lib/aspectRatioRemap";
 import { getAssetPath } from "@/lib/assetPath";
 import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { type EditorUndoableState, createInitialEditorState } from "./editorState";
@@ -66,7 +88,7 @@ export default function VideoEditor() {
   const {
     wallpaper, shadowIntensity, showBlur, motionBlurEnabled,
     borderRadius, padding, cropRegion, zoomRegions,
-    trimRegions, videoSegments, annotationRegions, aspectRatio, cursorHighlight,
+    trimRegions, videoSegments, annotationRegions, spotlightRegions, aspectRatio, cursorHighlight,
   } = editorState;
 
   // --- Transient state (not undoable) ---
@@ -79,6 +101,7 @@ export default function VideoEditor() {
   const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
   const [selectedTrimId, setSelectedTrimId] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [selectedSpotlightId, setSelectedSpotlightId] = useState<string | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [razorToolActive, setRazorToolActive] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -97,6 +120,7 @@ export default function VideoEditor() {
   const nextTrimIdRef = useRef(1);
   const nextAnnotationIdRef = useRef(1);
   const nextAnnotationZIndexRef = useRef(1);
+  const nextSpotlightIdRef = useRef(1);
   const exporterRef = useRef<VideoExporter | null>(null);
 
   // --- Undoable state updater helpers ---
@@ -109,6 +133,16 @@ export default function VideoEditor() {
   const updateStateDebounced = useCallback(<K extends keyof EditorUndoableState>(key: K, value: EditorUndoableState[K]) => {
     setEditorStateDebounced(prev => ({ ...prev, [key]: value }));
   }, [setEditorStateDebounced]);
+
+  // Aspect ratio change with automatic position remapping
+  const handleAspectRatioChange = useCallback((newAspectRatio: AspectRatio) => {
+    const video = videoPlaybackRef.current?.video;
+    const videoNativeWidth = video?.videoWidth || 1920;
+    const videoNativeHeight = video?.videoHeight || 1080;
+    setEditorState(prev => remapEditorStateForAspectRatio(
+      prev, newAspectRatio, videoNativeWidth, videoNativeHeight,
+    ));
+  }, [setEditorState]);
 
   // --- Project Save/Load ---
   const handleLoadProject = useCallback((data: ProjectFileData, videoUrl: string) => {
@@ -129,6 +163,7 @@ export default function VideoEditor() {
     setSelectedZoomId(null);
     setSelectedTrimId(null);
     setSelectedAnnotationId(null);
+    setSelectedSpotlightId(null);
     setSelectedSegmentId(null);
     setRazorToolActive(false);
     // Reset ID counters based on loaded data
@@ -144,11 +179,16 @@ export default function VideoEditor() {
       const num = parseInt(r.id.replace('annotation-', ''), 10);
       return isNaN(num) ? max : Math.max(max, num);
     }, 0);
+    const maxSpotlightId = (data.editorState.spotlightRegions || []).reduce((max, r) => {
+      const num = parseInt(r.id.replace('spotlight-', ''), 10);
+      return isNaN(num) ? max : Math.max(max, num);
+    }, 0);
     const maxZIndex = data.editorState.annotationRegions.reduce((max, r) => Math.max(max, r.zIndex || 0), 0);
     nextZoomIdRef.current = maxZoomId + 1;
     nextTrimIdRef.current = maxTrimId + 1;
     nextAnnotationIdRef.current = maxAnnotationId + 1;
     nextAnnotationZIndexRef.current = maxZIndex + 1;
+    nextSpotlightIdRef.current = maxSpotlightId + 1;
   }, [resetEditorState]);
 
   const { saveProject, saveProjectAs, openProject } = useProjectFile({
@@ -290,6 +330,7 @@ export default function VideoEditor() {
     if (id) {
       setSelectedTrimId(null);
       setSelectedAnnotationId(null);
+      setSelectedSpotlightId(null);
       setSelectedSegmentId(null);
     }
   }, []);
@@ -299,6 +340,7 @@ export default function VideoEditor() {
     if (id) {
       setSelectedZoomId(null);
       setSelectedAnnotationId(null);
+      setSelectedSpotlightId(null);
       setSelectedSegmentId(null);
     }
   }, []);
@@ -308,20 +350,69 @@ export default function VideoEditor() {
     if (id) {
       setSelectedZoomId(null);
       setSelectedTrimId(null);
+      setSelectedSpotlightId(null);
+      setSelectedSegmentId(null);
+    }
+  }, []);
+
+  const handleSelectSpotlight = useCallback((id: string | null) => {
+    setSelectedSpotlightId(id);
+    if (id) {
+      setSelectedZoomId(null);
+      setSelectedTrimId(null);
+      setSelectedAnnotationId(null);
       setSelectedSegmentId(null);
     }
   }, []);
 
   const handleZoomAdded = useCallback((span: Span) => {
+    const startMs = Math.round(span.start);
+    const endMs = Math.round(span.end);
+
+    // Also add a zoom region for timeline visualization
     const id = `zoom-${nextZoomIdRef.current++}`;
+    const defaultDepth: ZoomDepth = 3;
+    const targetZoom = ZOOM_DEPTH_SCALES[defaultDepth];
     const newRegion: ZoomRegion = {
       id,
-      startMs: Math.round(span.start),
-      endMs: Math.round(span.end),
-      depth: DEFAULT_ZOOM_DEPTH,
+      startMs,
+      endMs,
+      depth: defaultDepth,
       focus: { cx: 0.5, cy: 0.5 },
     };
-    setEditorState(prev => ({ ...prev, zoomRegions: [...prev.zoomRegions, newRegion] }));
+
+    // Find the segment at this source time and stamp zoom keyframes on it
+    setEditorState(prev => {
+      const seg = prev.videoSegments.find(s =>
+        startMs >= s.sourceStartMs && startMs < s.sourceEndMs
+      );
+      if (!seg) {
+        // No segment found — just add the zoom region for visual reference
+        return { ...prev, zoomRegions: [...prev.zoomRegions, newRegion] };
+      }
+
+      // Convert source time to relative-to-segment time
+      const segRelativeStart = startMs - seg.sourceStartMs;
+      const segRelativeEnd = Math.min(endMs - seg.sourceStartMs, seg.sourceEndMs - seg.sourceStartMs);
+
+      const newKeyframes = generateZoomKeyframes({
+        startRelativeMs: segRelativeStart,
+        endRelativeMs: segRelativeEnd,
+        targetZoom,
+        focusX: 0.5,
+        focusY: 0.5,
+      });
+
+      return {
+        ...prev,
+        zoomRegions: [...prev.zoomRegions, newRegion],
+        videoSegments: prev.videoSegments.map(s =>
+          s.id === seg.id
+            ? { ...s, keyframes: [...s.keyframes, ...newKeyframes] }
+            : s
+        ),
+      };
+    });
     setSelectedZoomId(id);
     setSelectedTrimId(null);
     setSelectedAnnotationId(null);
@@ -341,15 +432,104 @@ export default function VideoEditor() {
   }, [setEditorState]);
 
   const handleZoomSpanChange = useCallback((id: string, span: Span) => {
-    setEditorState(prev => ({
-      ...prev,
-      zoomRegions: prev.zoomRegions.map((region) =>
-        region.id === id
-          ? { ...region, startMs: Math.round(span.start), endMs: Math.round(span.end) }
-          : region,
-      ),
-    }));
+    setEditorState(prev => {
+      const region = prev.zoomRegions.find(r => r.id === id);
+      if (!region) return prev;
+
+      const newStartMs = Math.round(span.start);
+      const newEndMs = Math.round(span.end);
+
+      // Skip if span didn't actually change (e.g. click without drag)
+      if (newStartMs === region.startMs && newEndMs === region.endMs) return prev;
+
+      const oldDuration = region.endMs - region.startMs;
+      const newDuration = newEndMs - newStartMs;
+      const isMove = Math.abs(oldDuration - newDuration) < 2; // pure translation (same duration)
+      const delta = newStartMs - region.startMs;
+
+      const updatedSegments = prev.videoSegments.map(seg => {
+        const segEnd = seg.sourceEndMs;
+        const overlapsOld = region.startMs < segEnd && region.endMs > seg.sourceStartMs;
+        const overlapsNew = newStartMs < segEnd && newEndMs > seg.sourceStartMs;
+        if (!overlapsOld && !overlapsNew) return seg;
+
+        // Extract old zoom keyframes within the old region range
+        const oldRelStart = Math.max(0, region.startMs - seg.sourceStartMs);
+        const oldRelEnd = region.endMs - seg.sourceStartMs;
+        const nonZoomKfs = seg.keyframes.filter(kf => {
+          if (!isZoomKeyframe(kf)) return true;
+          return kf.timeMs < oldRelStart - 5 || kf.timeMs > oldRelEnd + 5;
+        });
+
+        if (!overlapsNew) return { ...seg, keyframes: nonZoomKfs };
+
+        if (isMove) {
+          // Pure move: shift all existing zoom keyframes by the time delta
+          const shiftedKfs = seg.keyframes
+            .filter(kf => {
+              if (!isZoomKeyframe(kf)) return false;
+              return kf.timeMs >= oldRelStart - 5 && kf.timeMs <= oldRelEnd + 5;
+            })
+            .map(kf => ({
+              ...kf,
+              timeMs: kf.timeMs + delta,
+            }))
+            // Clamp to segment bounds
+            .filter(kf => kf.timeMs >= 0 && kf.timeMs <= (segEnd - seg.sourceStartMs));
+
+          return { ...seg, keyframes: [...nonZoomKfs, ...shiftedKfs] };
+        }
+
+        // Resize: preserve user pan points, only regenerate auto-boundary keyframes
+        const panPointKfs = seg.keyframes.filter(kf => {
+          if (kf.source !== 'zoom') return false;
+          // Keep pan points that fall within the NEW region bounds
+          const absTime = seg.sourceStartMs + kf.timeMs;
+          return absTime >= newStartMs && absTime <= newEndMs;
+        });
+
+        // Use first pan point for zoom-in destination (t2), last for hold-end (t3)
+        const firstPan = getFirstPanPointFocus(panPointKfs);
+        const lastPan = getLastPanPointFocus(panPointKfs);
+        const panTimes = [...new Set(panPointKfs.map(kf => kf.timeMs))].sort((a, b) => a - b);
+        const firstPanZoom = panTimes.length > 0
+          ? panPointKfs.find(kf => Math.abs(kf.timeMs - panTimes[0]) < 5 && kf.property === 'zoom')?.value
+          : undefined;
+        const lastPanZoom = panTimes.length > 0
+          ? panPointKfs.find(kf => Math.abs(kf.timeMs - panTimes[panTimes.length - 1]) < 5 && kf.property === 'zoom')?.value
+          : undefined;
+
+        const targetZoom = firstPanZoom ?? ZOOM_DEPTH_SCALES[region.depth];
+        const clampedStart = Math.max(newStartMs, seg.sourceStartMs);
+        const clampedEnd = Math.min(newEndMs, segEnd);
+        const newAutoKeyframes = generateZoomKeyframes({
+          startRelativeMs: clampedStart - seg.sourceStartMs,
+          endRelativeMs: clampedEnd - seg.sourceStartMs,
+          targetZoom,
+          focusX: firstPan?.focusX ?? region.focus.cx,
+          focusY: firstPan?.focusY ?? region.focus.cy,
+          enterTransitionMs: region.enterTransition?.durationMs,
+          exitTransitionMs: region.exitTransition?.durationMs,
+          exitFocusX: lastPan?.focusX,
+          exitFocusY: lastPan?.focusY,
+          exitZoom: lastPanZoom,
+        });
+
+        return { ...seg, keyframes: [...nonZoomKfs, ...panPointKfs, ...newAutoKeyframes] };
+      });
+
+      return {
+        ...prev,
+        zoomRegions: prev.zoomRegions.map(r =>
+          r.id === id ? { ...r, startMs: newStartMs, endMs: newEndMs } : r
+        ),
+        videoSegments: updatedSegments,
+      };
+    });
   }, [setEditorState]);
+
+  // Current playhead position in source time (ms) — used by focus/zoom handlers
+  const sourceTimeMs = Math.round(currentTime * 1000);
 
   const handleTrimSpanChange = useCallback((id: string, span: Span) => {
     setEditorState(prev => ({
@@ -363,44 +543,236 @@ export default function VideoEditor() {
   }, [setEditorState]);
 
   const handleZoomFocusChange = useCallback((id: string, focus: ZoomFocus) => {
-    setEditorStateDebounced(prev => ({
-      ...prev,
-      zoomRegions: prev.zoomRegions.map((region) =>
-        region.id === id
-          ? { ...region, focus: clampFocusToDepth(focus, region.depth) }
-          : region,
-      ),
-    }));
-  }, [setEditorStateDebounced]);
+    setEditorStateDebounced(prev => {
+      const region = prev.zoomRegions.find(r => r.id === id);
+      if (!region) return prev;
+
+      // Find the segment containing the current playhead
+      const seg = findSegmentAtSourceTime(prev.videoSegments, sourceTimeMs);
+      const playheadInZoom = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
+
+      if (seg && playheadInZoom) {
+        // Create/update a pan point at the current playhead position
+        const updatedSegments = prev.videoSegments.map(s => {
+          if (s.id !== seg.id) return s;
+          const regionRelStart = region.startMs - s.sourceStartMs;
+          const regionRelEnd = region.endMs - s.sourceStartMs;
+          const relTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd);
+          let kfs = s.keyframes;
+          // Upsert focusX, focusY, and zoom (use target zoom, not interpolated mid-transition value)
+          const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
+          kfs = upsertKeyframe(kfs, relTime, 'focusX', focus.cx, 'ease-in-out');
+          kfs = upsertKeyframe(kfs, relTime, 'focusY', focus.cy, 'ease-in-out');
+          kfs = upsertKeyframe(kfs, relTime, 'zoom', targetZoom, 'ease-in-out');
+          // Tag as pan points
+          kfs = kfs.map(kf => {
+            if (Math.abs(kf.timeMs - relTime) < 5 && (kf.property === 'focusX' || kf.property === 'focusY' || kf.property === 'zoom')) {
+              return { ...kf, source: 'zoom' as const };
+            }
+            return kf;
+          });
+          // Sync t2/t3 auto boundaries + ensure t1/t4 are correct
+          kfs = syncZoomBoundaries(kfs, regionRelStart, regionRelEnd);
+          return { ...s, keyframes: kfs };
+        });
+
+        return {
+          ...prev,
+          zoomRegions: prev.zoomRegions.map(r =>
+            r.id === id ? { ...r, focus } : r
+          ),
+          videoSegments: updatedSegments,
+        };
+      }
+
+      // Playhead not in zoom — update auto-generated focus keyframes
+      // If pan points exist, they define the focus positions; only update where no pan points override
+      const updatedSegments = prev.videoSegments.map(s => {
+        if (region.startMs >= s.sourceEndMs || region.endMs <= s.sourceStartMs) return s;
+        const segRelStart = Math.max(0, region.startMs - s.sourceStartMs);
+        const segRelEnd = Math.min(s.sourceEndMs - s.sourceStartMs, region.endMs - s.sourceStartMs);
+        const regionMid = (segRelStart + segRelEnd) / 2;
+
+        // Check if this segment has pan points in this zoom region
+        const regionPanPoints = s.keyframes.filter(kf =>
+          kf.source === 'zoom' && kf.timeMs >= segRelStart - 5 && kf.timeMs <= segRelEnd + 5
+        );
+        const firstPan = getFirstPanPointFocus(regionPanPoints);
+        const lastPan = getLastPanPointFocus(regionPanPoints);
+
+        let updatedKfs = s.keyframes.map(kf => {
+          if (kf.source !== 'zoom-auto') return kf;
+          if (kf.timeMs < segRelStart - 5 || kf.timeMs > segRelEnd + 5) return kf;
+          // Skip boundary keyframes at t1/t4 (stay at 0.5)
+          if (Math.abs(kf.timeMs - segRelStart) < 5 || Math.abs(kf.timeMs - segRelEnd) < 5) return kf;
+          // t2 (first half): use first pan point if exists, otherwise region.focus
+          if (kf.timeMs < regionMid) {
+            if (kf.property === 'focusX') return { ...kf, value: firstPan?.focusX ?? focus.cx };
+            if (kf.property === 'focusY') return { ...kf, value: firstPan?.focusY ?? focus.cy };
+          }
+          // t3 (second half): use last pan point if exists, otherwise region.focus
+          if (kf.timeMs >= regionMid) {
+            if (kf.property === 'focusX') return { ...kf, value: lastPan?.focusX ?? focus.cx };
+            if (kf.property === 'focusY') return { ...kf, value: lastPan?.focusY ?? focus.cy };
+          }
+          return kf;
+        });
+        // Ensure t1/t4 boundaries weren't corrupted
+        updatedKfs = syncZoomBoundaries(updatedKfs, segRelStart, segRelEnd);
+        return { ...s, keyframes: updatedKfs };
+      });
+
+      return {
+        ...prev,
+        zoomRegions: prev.zoomRegions.map(r =>
+          r.id === id ? { ...r, focus } : r
+        ),
+        videoSegments: updatedSegments,
+      };
+    });
+  }, [setEditorStateDebounced, sourceTimeMs]);
 
   const handleZoomDepthChange = useCallback((depth: ZoomDepth) => {
     if (!selectedZoomId) return;
-    setEditorState(prev => ({
-      ...prev,
-      zoomRegions: prev.zoomRegions.map((region) =>
-        region.id === selectedZoomId
-          ? { ...region, depth, focus: clampFocusToDepth(region.focus, depth) }
-          : region,
-      ),
-    }));
+    setEditorState(prev => {
+      const region = prev.zoomRegions.find(r => r.id === selectedZoomId);
+      if (!region) return prev;
+
+      const targetZoom = ZOOM_DEPTH_SCALES[depth];
+
+      // Update auto-boundary zoom keyframes only (preserve user pan points)
+      const updatedSegments = prev.videoSegments.map(seg => {
+        if (region.startMs >= seg.sourceEndMs || region.endMs <= seg.sourceStartMs) return seg;
+
+        const segRelativeStart = Math.max(0, region.startMs - seg.sourceStartMs);
+        const segRelativeEnd = Math.min(seg.sourceEndMs - seg.sourceStartMs, region.endMs - seg.sourceStartMs);
+
+        let updatedKeyframes = seg.keyframes.map(kf => {
+          // Only update auto-generated boundary keyframes, not user pan points
+          if (kf.source !== 'zoom-auto' || kf.property !== 'zoom') return kf;
+          if (kf.timeMs < segRelativeStart - 5 || kf.timeMs > segRelativeEnd + 5) return kf;
+          // Boundary keyframes (t1/t4) stay at zoom=1
+          if (Math.abs(kf.timeMs - segRelativeStart) < 5 || Math.abs(kf.timeMs - segRelativeEnd) < 5) {
+            return kf;
+          }
+          // t2/t3 get the new target zoom (may be overridden by sync below)
+          return { ...kf, value: targetZoom };
+        });
+
+        // Sync t2/t3 to pan point values (if pan points exist, they take priority)
+        // and ensure t1/t4 boundaries are correct
+        updatedKeyframes = syncZoomBoundaries(updatedKeyframes, segRelativeStart, segRelativeEnd);
+
+        return { ...seg, keyframes: updatedKeyframes };
+      });
+
+      return {
+        ...prev,
+        zoomRegions: prev.zoomRegions.map(r =>
+          r.id === selectedZoomId ? { ...r, depth } : r
+        ),
+        videoSegments: updatedSegments,
+      };
+    });
   }, [selectedZoomId, setEditorState]);
 
-  const handleZoomTransitionChange = useCallback((id: string, enter: TransitionConfig, exit: TransitionConfig) => {
-    setEditorState(prev => ({
-      ...prev,
-      zoomRegions: prev.zoomRegions.map((region) =>
-        region.id === id
-          ? { ...region, enterTransition: enter, exitTransition: exit }
-          : region,
-      ),
-    }));
-  }, [setEditorState]);
+  const handleZoomTransitionChange = useCallback((enterMs: number, exitMs: number) => {
+    if (!selectedZoomId) return;
+    setEditorState(prev => {
+      const region = prev.zoomRegions.find(r => r.id === selectedZoomId);
+      if (!region) return prev;
+
+      const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
+
+      // Remove old zoom keyframes and regenerate with new timing
+      const updatedSegments = prev.videoSegments.map(seg => {
+        if (region.startMs >= seg.sourceEndMs || region.endMs <= seg.sourceStartMs) return seg;
+
+        const segRelativeStart = Math.max(0, region.startMs - seg.sourceStartMs);
+        const segRelativeEnd = Math.min(seg.sourceEndMs - seg.sourceStartMs, region.endMs - seg.sourceStartMs);
+
+        // Remove old auto-generated keyframes, preserve user pan points
+        const nonZoomKfs = seg.keyframes.filter(kf => {
+          if (!isZoomKeyframe(kf)) return true;
+          return kf.timeMs < segRelativeStart - 5 || kf.timeMs > segRelativeEnd + 5;
+        });
+        const panPointKfs = seg.keyframes.filter(kf => {
+          if (kf.source !== 'zoom') return false;
+          return kf.timeMs >= segRelativeStart - 5 && kf.timeMs <= segRelativeEnd + 5;
+        });
+
+        // Use first/last pan point for zoom-in/hold-end destinations (focus + zoom)
+        const firstPan = getFirstPanPointFocus(panPointKfs);
+        const lastPan = getLastPanPointFocus(panPointKfs);
+        const panTimes = [...new Set(panPointKfs.map(kf => kf.timeMs))].sort((a, b) => a - b);
+        const firstPanZoom = panTimes.length > 0
+          ? panPointKfs.find(kf => Math.abs(kf.timeMs - panTimes[0]) < 5 && kf.property === 'zoom')?.value
+          : undefined;
+        const lastPanZoom = panTimes.length > 0
+          ? panPointKfs.find(kf => Math.abs(kf.timeMs - panTimes[panTimes.length - 1]) < 5 && kf.property === 'zoom')?.value
+          : undefined;
+
+        // Regenerate with new transition durations
+        const newKeyframes = generateZoomKeyframes({
+          startRelativeMs: segRelativeStart,
+          endRelativeMs: segRelativeEnd,
+          targetZoom: firstPanZoom ?? targetZoom,
+          focusX: firstPan?.focusX ?? region.focus.cx,
+          focusY: firstPan?.focusY ?? region.focus.cy,
+          enterTransitionMs: enterMs,
+          exitTransitionMs: exitMs,
+          exitFocusX: lastPan?.focusX,
+          exitFocusY: lastPan?.focusY,
+          exitZoom: lastPanZoom,
+        });
+
+        return { ...seg, keyframes: [...nonZoomKfs, ...panPointKfs, ...newKeyframes] };
+      });
+
+      return {
+        ...prev,
+        zoomRegions: prev.zoomRegions.map(r =>
+          r.id === selectedZoomId
+            ? {
+                ...r,
+                enterTransition: { ...DEFAULT_TRANSITION_CONFIG, durationMs: enterMs },
+                exitTransition: { ...DEFAULT_TRANSITION_CONFIG, durationMs: exitMs },
+              }
+            : r
+        ),
+        videoSegments: updatedSegments,
+      };
+    });
+  }, [selectedZoomId, setEditorState]);
 
   const handleZoomDelete = useCallback((id: string) => {
-    setEditorState(prev => ({
-      ...prev,
-      zoomRegions: prev.zoomRegions.filter((region) => region.id !== id),
-    }));
+    setEditorState(prev => {
+      const region = prev.zoomRegions.find(r => r.id === id);
+
+      // Remove zoom keyframes from all overlapping segments
+      let updatedSegments = prev.videoSegments;
+      if (region) {
+        updatedSegments = prev.videoSegments.map(seg => {
+          if (region.startMs >= seg.sourceEndMs || region.endMs <= seg.sourceStartMs) return seg;
+
+          const segRelativeStart = Math.max(0, region.startMs - seg.sourceStartMs);
+          const segRelativeEnd = Math.min(seg.sourceEndMs - seg.sourceStartMs, region.endMs - seg.sourceStartMs);
+
+          const filtered = seg.keyframes.filter(kf => {
+            if (!isZoomKeyframe(kf)) return true;
+            return kf.timeMs < segRelativeStart - 5 || kf.timeMs > segRelativeEnd + 5;
+          });
+
+          return { ...seg, keyframes: filtered };
+        });
+      }
+
+      return {
+        ...prev,
+        zoomRegions: prev.zoomRegions.filter(r => r.id !== id),
+        videoSegments: updatedSegments,
+      };
+    });
     if (selectedZoomId === id) {
       setSelectedZoomId(null);
     }
@@ -419,10 +791,37 @@ export default function VideoEditor() {
   const handleAutoZoomApply = useCallback((newRegions: ZoomRegion[], nextId: number) => {
     if (newRegions.length === 0) return;
     nextZoomIdRef.current = nextId;
-    setEditorState(prev => ({
-      ...prev,
-      zoomRegions: [...prev.zoomRegions, ...newRegions],
-    }));
+    setEditorState(prev => {
+      // For each new zoom region, generate keyframes on the containing segment
+      let updatedSegments = [...prev.videoSegments];
+      for (const region of newRegions) {
+        const seg = updatedSegments.find(s =>
+          region.startMs >= s.sourceStartMs && region.startMs < s.sourceEndMs
+        );
+        if (!seg) continue;
+
+        const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
+        const newKeyframes = generateZoomKeyframes({
+          startRelativeMs: region.startMs - seg.sourceStartMs,
+          endRelativeMs: Math.min(region.endMs - seg.sourceStartMs, seg.sourceEndMs - seg.sourceStartMs),
+          targetZoom,
+          focusX: region.focus.cx,
+          focusY: region.focus.cy,
+        });
+
+        updatedSegments = updatedSegments.map(s =>
+          s.id === seg.id
+            ? { ...s, keyframes: [...s.keyframes, ...newKeyframes] }
+            : s
+        );
+      }
+
+      return {
+        ...prev,
+        zoomRegions: [...prev.zoomRegions, ...newRegions],
+        videoSegments: updatedSegments,
+      };
+    });
   }, [setEditorState]);
 
   const handleAnnotationAdded = useCallback((span: Span) => {
@@ -547,6 +946,202 @@ export default function VideoEditor() {
     }));
   }, [setEditorStateDebounced]);
 
+  // --- Spotlight handlers ---
+
+  const handleSpotlightAdded = useCallback((span: Span) => {
+    const id = `spotlight-${nextSpotlightIdRef.current++}`;
+    const newRegion: SpotlightRegion = {
+      id,
+      startMs: Math.round(span.start),
+      endMs: Math.round(span.end),
+      ...DEFAULT_SPOTLIGHT_REGION,
+    };
+    setEditorState(prev => ({ ...prev, spotlightRegions: [...prev.spotlightRegions, newRegion] }));
+    setSelectedSpotlightId(id);
+    setSelectedZoomId(null);
+    setSelectedTrimId(null);
+    setSelectedAnnotationId(null);
+  }, [setEditorState]);
+
+  const handleSpotlightSpanChange = useCallback((id: string, span: Span) => {
+    setEditorState(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map((region) =>
+        region.id === id
+          ? { ...region, startMs: Math.round(span.start), endMs: Math.round(span.end) }
+          : region,
+      ),
+    }));
+  }, [setEditorState]);
+
+  const handleSpotlightDelete = useCallback((id: string) => {
+    setEditorState(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.filter((region) => region.id !== id),
+    }));
+    if (selectedSpotlightId === id) {
+      setSelectedSpotlightId(null);
+    }
+  }, [selectedSpotlightId, setEditorState]);
+
+  const handleSpotlightUpdate = useCallback((id: string, updates: Partial<SpotlightRegion>) => {
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map((region) =>
+        region.id === id ? { ...region, ...updates } : region,
+      ),
+    }));
+  }, [setEditorStateDebounced]);
+
+  const handleSpotlightPositionChange = useCallback((id: string, position: { x: number; y: number }) => {
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map((region) =>
+        region.id === id ? { ...region, x: position.x, y: position.y } : region,
+      ),
+    }));
+  }, [setEditorStateDebounced]);
+
+  const handleSpotlightSizeChange = useCallback((id: string, size: { width: number; height: number }) => {
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map((region) =>
+        region.id === id ? { ...region, width: size.width, height: size.height } : region,
+      ),
+    }));
+  }, [setEditorStateDebounced]);
+
+  const handleAutoSpotlightApply = useCallback((newRegions: SpotlightRegion[], nextId: number) => {
+    if (newRegions.length === 0) return;
+    nextSpotlightIdRef.current = nextId;
+    setEditorState(prev => ({
+      ...prev,
+      spotlightRegions: [...prev.spotlightRegions, ...newRegions],
+    }));
+  }, [setEditorState]);
+
+  // --- Spotlight animation (pan point) handlers ---
+
+  // Is the playhead inside the selected spotlight?
+  const playheadInsideSelectedSpotlight = useMemo(() => {
+    if (!selectedSpotlightId) return false;
+    const spot = spotlightRegions.find(s => s.id === selectedSpotlightId);
+    if (!spot) return false;
+    return sourceTimeMs >= spot.startMs && sourceTimeMs <= spot.endMs;
+  }, [selectedSpotlightId, spotlightRegions, sourceTimeMs]);
+
+  // Resolve animated spotlight values at playhead
+  const activeSpotlightValues = useMemo(() => {
+    if (!selectedSpotlightId) return null;
+    const spot = spotlightRegions.find(s => s.id === selectedSpotlightId);
+    if (!spot) return null;
+    if (!spot.keyframes || spot.keyframes.length === 0) return null;
+    const relTime = sourceTimeMs - spot.startMs;
+    return resolveSpotlightAtTime(spot.keyframes, relTime, spot);
+  }, [selectedSpotlightId, spotlightRegions, sourceTimeMs]);
+
+  // Find nearest spotlight keyframe time at playhead (50ms snap)
+  const currentSpotlightKeyframeTime = useMemo<number | null>(() => {
+    if (!playheadInsideSelectedSpotlight || !selectedSpotlightId) return null;
+    const spot = spotlightRegions.find(s => s.id === selectedSpotlightId);
+    if (!spot?.keyframes?.length) return null;
+    const relTime = sourceTimeMs - spot.startMs;
+    const pointTimes = getUniqueSpotlightPointTimes(spot.keyframes);
+    const nearest = pointTimes.find(t => Math.abs(t - relTime) < 50);
+    return nearest !== undefined ? nearest : null;
+  }, [playheadInsideSelectedSpotlight, selectedSpotlightId, spotlightRegions, sourceTimeMs]);
+
+  // Add a spotlight animation point at playhead
+  const handleAddSpotlightPoint = useCallback((spotlightId: string) => {
+    const spot = spotlightRegions.find(s => s.id === spotlightId);
+    if (!spot) return;
+    if (sourceTimeMs < spot.startMs || sourceTimeMs > spot.endMs) return;
+
+    const relTime = sourceTimeMs - spot.startMs;
+    const isFirstPoint = !spot.keyframes || spot.keyframes.length === 0;
+
+    setEditorState(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map(s => {
+        if (s.id !== spotlightId) return s;
+        let kfs = s.keyframes ? [...s.keyframes] : [];
+
+        if (isFirstPoint) {
+          // Auto-create a keyframe at t=0 with current static values
+          kfs = upsertAllSpotlightPropertiesAtTime(kfs, 0, { x: s.x, y: s.y, width: s.width, height: s.height }, 'ease-in-out', 'spotlight');
+        }
+
+        // Resolve current interpolated values at this time
+        const currentValues = resolveSpotlightAtTime(kfs.length > 0 ? kfs : undefined, relTime, s);
+        // Create user point at playhead
+        kfs = upsertAllSpotlightPropertiesAtTime(kfs, relTime, currentValues, 'ease-in-out', 'spotlight');
+
+        return { ...s, keyframes: kfs };
+      }),
+    }));
+  }, [spotlightRegions, sourceTimeMs, setEditorState]);
+
+  // Hold: copy most recent previous point values to playhead
+  const handleHoldSpotlightPoint = useCallback((spotlightId: string) => {
+    const spot = spotlightRegions.find(s => s.id === spotlightId);
+    if (!spot?.keyframes?.length) return;
+    if (sourceTimeMs < spot.startMs || sourceTimeMs > spot.endMs) return;
+
+    const relTime = sourceTimeMs - spot.startMs;
+    const pointTimes = getUniqueSpotlightPointTimes(spot.keyframes);
+    const prevTime = pointTimes.filter(t => t < relTime - 5).pop();
+    if (prevTime === undefined) return;
+
+    // Get values from that point
+    const prevValues = resolveSpotlightAtTime(spot.keyframes, prevTime, spot);
+
+    setEditorState(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map(s => {
+        if (s.id !== spotlightId) return s;
+        let kfs = s.keyframes ? [...s.keyframes] : [];
+        kfs = upsertAllSpotlightPropertiesAtTime(kfs, relTime, prevValues, 'ease-in-out', 'spotlight');
+        return { ...s, keyframes: kfs };
+      }),
+    }));
+  }, [spotlightRegions, sourceTimeMs, setEditorState]);
+
+  // Change a spotlight property (x/y/width/height) at the current point
+  const handleSpotlightPropertyChange = useCallback((property: SpotlightAnimProperty, value: number) => {
+    if (!playheadInsideSelectedSpotlight || !selectedSpotlightId) return;
+    const spot = spotlightRegions.find(s => s.id === selectedSpotlightId);
+    if (!spot) return;
+
+    const relTime = sourceTimeMs - spot.startMs;
+
+    // Snap to existing keyframe near playhead, or use playhead time
+    const targetTime = currentSpotlightKeyframeTime !== null
+      ? currentSpotlightKeyframeTime
+      : relTime;
+
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      spotlightRegions: prev.spotlightRegions.map(s => {
+        if (s.id !== selectedSpotlightId) return s;
+        let kfs = s.keyframes ? [...s.keyframes] : [];
+
+        // Auto-create point if none exists at this time
+        const hasPoint = kfs.some(
+          kf => kf.source === 'spotlight' && Math.abs(kf.timeMs - targetTime) < 50
+        );
+        if (!hasPoint) {
+          // Create all 4 properties at this time with current interpolated values
+          const currentValues = resolveSpotlightAtTime(kfs.length > 0 ? kfs : undefined, targetTime, s);
+          kfs = upsertAllSpotlightPropertiesAtTime(kfs, targetTime, currentValues, 'ease-in-out', 'spotlight');
+        }
+
+        // Update the specific property
+        kfs = upsertSpotlightKeyframe(kfs, targetTime, property, value, 'ease-in-out', 'spotlight');
+        return { ...s, keyframes: kfs };
+      }),
+    }));
+  }, [playheadInsideSelectedSpotlight, selectedSpotlightId, spotlightRegions, sourceTimeMs, currentSpotlightKeyframeTime, setEditorStateDebounced]);
+
   // --- Video Segment handlers ---
 
   const handleSelectSegment = useCallback((id: string | null) => {
@@ -555,6 +1150,7 @@ export default function VideoEditor() {
       setSelectedZoomId(null);
       setSelectedTrimId(null);
       setSelectedAnnotationId(null);
+      setSelectedSpotlightId(null);
     }
   }, []);
 
@@ -595,14 +1191,27 @@ export default function VideoEditor() {
     });
   }, [setEditorState]);
 
-  const handleSegmentTransformChange = useCallback((segmentId: string, transform: Partial<VideoSegment['transform']>) => {
+  const handleSegmentTransformChange = useCallback((segmentId: string, transform: Partial<VideoSegment['transform']>, playheadTimeMs?: number) => {
     setEditorStateDebounced(prev => ({
       ...prev,
-      videoSegments: prev.videoSegments.map(s =>
-        s.id === segmentId
-          ? { ...s, transform: { ...s.transform, ...transform } }
-          : s,
-      ),
+      videoSegments: prev.videoSegments.map(s => {
+        if (s.id !== segmentId) return s;
+
+        // If playheadTimeMs is provided and keyframes exist at that time, upsert keyframes
+        if (playheadTimeMs !== undefined) {
+          const nearestTime = findNearestKeyframeTime(s.keyframes, playheadTimeMs);
+          if (nearestTime !== null) {
+            let updatedKfs = s.keyframes;
+            for (const [prop, value] of Object.entries(transform)) {
+              updatedKfs = upsertKeyframe(updatedKfs, nearestTime, prop as keyof VideoSegment['transform'], value as number);
+            }
+            return { ...s, keyframes: updatedKfs };
+          }
+        }
+
+        // Fallback: update static transform baseline
+        return { ...s, transform: { ...s.transform, ...transform } };
+      }),
     }));
   }, [setEditorStateDebounced]);
 
@@ -616,6 +1225,224 @@ export default function VideoEditor() {
       ),
     }));
   }, [setEditorState]);
+
+  // --- Keyframe CRUD handlers ---
+
+  // Add keyframes for ALL 8 properties at the playhead, using current interpolated values
+  const handleAddKeyframeAtPlayhead = useCallback((segmentId: string, relativeTimeMs: number) => {
+    setEditorState(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s => {
+        if (s.id !== segmentId) return s;
+        // Resolve current interpolated transform at this time
+        const currentTransform = resolveTransformAtTime(s.keyframes, relativeTimeMs, s.transform);
+        const updatedKfs = upsertAllPropertiesAtTime(s.keyframes, relativeTimeMs, currentTransform);
+        return { ...s, keyframes: updatedKfs };
+      }),
+    }));
+  }, [setEditorState]);
+
+  // Delete all keyframes at a specific time
+  const handleDeleteKeyframesAtTime = useCallback((segmentId: string, timeMs: number) => {
+    setEditorState(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s =>
+        s.id === segmentId
+          ? { ...s, keyframes: removeKeyframesAtTime(s.keyframes, timeMs) }
+          : s,
+      ),
+    }));
+  }, [setEditorState]);
+
+  // Move all keyframes from one time to another
+  const handleMoveKeyframesAtTime = useCallback((segmentId: string, oldTimeMs: number, newTimeMs: number) => {
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s =>
+        s.id === segmentId
+          ? { ...s, keyframes: moveKeyframesAtTime(s.keyframes, oldTimeMs, newTimeMs) }
+          : s,
+      ),
+    }));
+  }, [setEditorStateDebounced]);
+
+  // --- Zoom-derived state for SettingsPanel ---
+
+  // Is the playhead inside the selected zoom region?
+  const playheadInsideSelectedZoom = useMemo(() => {
+    if (!selectedZoomId) return false;
+    const region = zoomRegions.find(r => r.id === selectedZoomId);
+    if (!region) return false;
+    return sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
+  }, [selectedZoomId, zoomRegions, sourceTimeMs]);
+
+  // Resolve the current zoom/focusX/focusY at the playhead from the containing segment
+  const activeZoomTransform = useMemo(() => {
+    if (!playheadInsideSelectedZoom) return null;
+    const seg = findSegmentAtSourceTime(videoSegments, sourceTimeMs);
+    if (!seg) return null;
+    const relTime = sourceTimeMs - seg.sourceStartMs;
+    const resolved = resolveTransformAtTime(seg.keyframes, relTime, seg.transform);
+    return { zoom: resolved.zoom, focusX: resolved.focusX, focusY: resolved.focusY };
+  }, [playheadInsideSelectedZoom, videoSegments, sourceTimeMs]);
+
+  // Find the nearest zoom keyframe time at the playhead (for enabling slider editing)
+  const currentZoomKeyframeTime = useMemo<{ segmentId: string; relativeTimeMs: number } | null>(() => {
+    if (!playheadInsideSelectedZoom) return null;
+    const seg = findSegmentAtSourceTime(videoSegments, sourceTimeMs);
+    if (!seg) return null;
+    const relTime = sourceTimeMs - seg.sourceStartMs;
+    const panPointTimes = getUniquePanPointTimes(seg.keyframes);
+    // Snap threshold: 50ms
+    const nearest = panPointTimes.find(t => Math.abs(t - relTime) < 50);
+    if (nearest === undefined) return null;
+    return { segmentId: seg.id, relativeTimeMs: nearest };
+  }, [playheadInsideSelectedZoom, videoSegments, sourceTimeMs]);
+
+  // Add a "pan point" — insert zoom/focusX/focusY keyframes at playhead inside a zoom region
+  const handleAddZoomPanPoint = useCallback((zoomRegionId: string) => {
+    const region = zoomRegions.find(r => r.id === zoomRegionId);
+    if (!region) return;
+    if (sourceTimeMs < region.startMs || sourceTimeMs > region.endMs) return;
+
+    const seg = findSegmentAtSourceTime(videoSegments, sourceTimeMs);
+    if (!seg) return;
+
+    setEditorState(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s => {
+        if (s.id !== seg.id) return s;
+        const regionRelStart = region.startMs - s.sourceStartMs;
+        const regionRelEnd = region.endMs - s.sourceStartMs;
+        const relTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd);
+        const currentTransform = resolveTransformAtTime(s.keyframes, relTime, s.transform);
+        const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
+        let kfs = s.keyframes;
+        kfs = upsertKeyframe(kfs, relTime, 'zoom', targetZoom, 'ease-in-out');
+        kfs = upsertKeyframe(kfs, relTime, 'focusX', currentTransform.focusX, 'ease-in-out');
+        kfs = upsertKeyframe(kfs, relTime, 'focusY', currentTransform.focusY, 'ease-in-out');
+        // Tag as pan points
+        kfs = kfs.map(kf => {
+          if (Math.abs(kf.timeMs - relTime) < 5 && (kf.property === 'zoom' || kf.property === 'focusX' || kf.property === 'focusY')) {
+            return { ...kf, source: 'zoom' as const };
+          }
+          return kf;
+        });
+        // Sync t2/t3 auto boundaries + ensure t1/t4 are correct
+        kfs = syncZoomBoundaries(kfs, regionRelStart, regionRelEnd);
+        return { ...s, keyframes: kfs };
+      }),
+    }));
+  }, [zoomRegions, sourceTimeMs, videoSegments, setEditorState]);
+
+  // Duplicate the most recent pan point at the playhead to create a "hold" segment.
+  // Camera stays still between the original and the duplicate, then moves to the next point.
+  const handleHoldPanPoint = useCallback((zoomRegionId: string) => {
+    const region = zoomRegions.find(r => r.id === zoomRegionId);
+    if (!region) return;
+    if (sourceTimeMs < region.startMs || sourceTimeMs > region.endMs) return;
+
+    const seg = findSegmentAtSourceTime(videoSegments, sourceTimeMs);
+    if (!seg) return;
+    const regionRelStart = region.startMs - seg.sourceStartMs;
+    const regionRelEnd = region.endMs - seg.sourceStartMs;
+    const relTime = clampToPanRange(sourceTimeMs - seg.sourceStartMs, regionRelStart, regionRelEnd);
+
+    // Find the most recent pan point before the playhead
+    const panPoints = seg.keyframes.filter(kf => kf.source === 'zoom');
+    const panPointTimes = [...new Set(panPoints.map(kf => kf.timeMs))].sort((a, b) => a - b);
+    const prevTime = panPointTimes.filter(t => t < relTime - 5).pop();
+    if (prevTime === undefined) return; // No previous pan point to duplicate
+
+    // Get focus values from that pan point
+    const atPrev = panPoints.filter(kf => Math.abs(kf.timeMs - prevTime) < 5);
+    const prevFocusX = atPrev.find(kf => kf.property === 'focusX')?.value ?? 0.5;
+    const prevFocusY = atPrev.find(kf => kf.property === 'focusY')?.value ?? 0.5;
+    const prevZoom = atPrev.find(kf => kf.property === 'zoom')?.value;
+
+    setEditorState(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s => {
+        if (s.id !== seg.id) return s;
+        let kfs = s.keyframes;
+        const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
+        kfs = upsertKeyframe(kfs, relTime, 'focusX', prevFocusX, 'ease-in-out');
+        kfs = upsertKeyframe(kfs, relTime, 'focusY', prevFocusY, 'ease-in-out');
+        kfs = upsertKeyframe(kfs, relTime, 'zoom', prevZoom ?? targetZoom, 'ease-in-out');
+        // Tag as pan points
+        kfs = kfs.map(kf => {
+          if (Math.abs(kf.timeMs - relTime) < 5 && (kf.property === 'focusX' || kf.property === 'focusY' || kf.property === 'zoom')) {
+            return { ...kf, source: 'zoom' as const };
+          }
+          return kf;
+        });
+        // Sync t2/t3 auto boundaries + ensure t1/t4 are correct
+        kfs = syncZoomBoundaries(kfs, regionRelStart, regionRelEnd);
+        return { ...s, keyframes: kfs };
+      }),
+    }));
+  }, [zoomRegions, sourceTimeMs, videoSegments, setEditorState]);
+
+  // Change a zoom property (zoom/focusX/focusY) at the current pan point.
+  // Updates only the specific keyframe. Then syncs t2/t3 auto boundaries to
+  // match the first/last pan point values (zoom + focus), so transitions are smooth.
+  const handleZoomPropertyChange = useCallback((property: 'zoom' | 'focusX' | 'focusY', value: number) => {
+    if (!playheadInsideSelectedZoom) return;
+
+    const seg = findSegmentAtSourceTime(videoSegments, sourceTimeMs);
+    if (!seg) return;
+
+    setEditorStateDebounced(prev => ({
+      ...prev,
+      videoSegments: prev.videoSegments.map(s => {
+        if (s.id !== seg.id) return s;
+
+        const region = prev.zoomRegions.find(r => r.id === selectedZoomId);
+        if (!region) return s;
+        const regionRelStart = region.startMs - s.sourceStartMs;
+        const regionRelEnd = region.endMs - s.sourceStartMs;
+        const clampedRelTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd);
+
+        // Snap to existing pan point near playhead, or use clamped playhead time
+        const targetTime = currentZoomKeyframeTime?.segmentId === seg.id
+          ? currentZoomKeyframeTime.relativeTimeMs
+          : clampedRelTime;
+
+        let kfs = s.keyframes;
+
+        // Auto-create pan point if none exists at this time
+        const hasPanPoint = kfs.some(
+          kf => kf.source === 'zoom' && Math.abs(kf.timeMs - targetTime) < 50
+        );
+        if (!hasPanPoint) {
+          const currentTransform = resolveTransformAtTime(kfs, targetTime, s.transform);
+          const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
+          kfs = upsertKeyframe(kfs, targetTime, 'zoom', targetZoom, 'ease-in-out');
+          kfs = upsertKeyframe(kfs, targetTime, 'focusX', currentTransform.focusX, 'ease-in-out');
+          kfs = upsertKeyframe(kfs, targetTime, 'focusY', currentTransform.focusY, 'ease-in-out');
+          kfs = kfs.map(kf => {
+            if (Math.abs(kf.timeMs - targetTime) < 5 && (kf.property === 'zoom' || kf.property === 'focusX' || kf.property === 'focusY')) {
+              return { ...kf, source: 'zoom' as const };
+            }
+            return kf;
+          });
+        }
+
+        // Update the specific property on THIS pan point only
+        kfs = upsertKeyframe(kfs, targetTime, property, value, 'ease-in-out');
+        kfs = kfs.map(kf => {
+          if (Math.abs(kf.timeMs - targetTime) < 5 && kf.property === property) {
+            return { ...kf, source: 'zoom' as const };
+          }
+          return kf;
+        });
+
+        // Sync t2/t3 auto boundaries + ensure t1/t4 are correct
+        kfs = syncZoomBoundaries(kfs, regionRelStart, regionRelEnd);
+        return { ...s, keyframes: kfs };
+      }),
+    }));
+  }, [playheadInsideSelectedZoom, videoSegments, sourceTimeMs, currentZoomKeyframeTime, setEditorStateDebounced, selectedZoomId]);
 
   // Razor tool: split at current playhead position (source time coordinates)
   const handleRazorAtPlayhead = useCallback(() => {
@@ -708,6 +1535,12 @@ export default function VideoEditor() {
   }, [selectedAnnotationId, annotationRegions]);
 
   useEffect(() => {
+    if (selectedSpotlightId && !spotlightRegions.some((region) => region.id === selectedSpotlightId)) {
+      setSelectedSpotlightId(null);
+    }
+  }, [selectedSpotlightId, spotlightRegions]);
+
+  useEffect(() => {
     if (selectedSegmentId && !videoSegments.some((s) => s.id === selectedSegmentId)) {
       setSelectedSegmentId(null);
     }
@@ -755,7 +1588,6 @@ export default function VideoEditor() {
           loop: settings.gifConfig.loop,
           sizePreset: settings.gifConfig.sizePreset,
           wallpaper,
-          zoomRegions,
           trimRegions,
           showShadow: shadowIntensity > 0,
           shadowIntensity,
@@ -766,6 +1598,7 @@ export default function VideoEditor() {
           videoPadding: padding,
           cropRegion,
           annotationRegions,
+          spotlightRegions,
           previewWidth,
           previewHeight,
           cursorData,
@@ -884,7 +1717,6 @@ export default function VideoEditor() {
           bitrate,
           codec: 'avc1.640033',
           wallpaper,
-          zoomRegions,
           trimRegions,
           showShadow: shadowIntensity > 0,
           shadowIntensity,
@@ -894,6 +1726,7 @@ export default function VideoEditor() {
           padding,
           cropRegion,
           annotationRegions,
+          spotlightRegions,
           previewWidth,
           previewHeight,
           cursorData,
@@ -944,7 +1777,7 @@ export default function VideoEditor() {
       setShowExportDialog(false);
       setExportProgress(null);
     }
-  }, [videoPath, wallpaper, zoomRegions, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, padding, cropRegion, annotationRegions, isPlaying, aspectRatio, exportQuality, cursorData, cursorHighlight, videoSegments]);
+  }, [videoPath, wallpaper, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, padding, cropRegion, annotationRegions, spotlightRegions, isPlaying, aspectRatio, exportQuality, cursorData, cursorHighlight, videoSegments]);
 
   const handleOpenExportDialog = useCallback(() => {
     if (!videoPath) {
@@ -1075,6 +1908,11 @@ export default function VideoEditor() {
                       cursorData={cursorData}
                       cursorHighlight={cursorHighlight}
                       videoSegments={videoSegments}
+                      spotlightRegions={spotlightRegions}
+                      selectedSpotlightId={selectedSpotlightId}
+                      onSelectSpotlight={handleSelectSpotlight}
+                      onSpotlightPositionChange={handleSpotlightPositionChange}
+                      onSpotlightSizeChange={handleSpotlightSizeChange}
                     />
                   </div>
                 </div>
@@ -1144,10 +1982,21 @@ export default function VideoEditor() {
               onRazorAtPlayhead={handleRazorAtPlayhead}
               videoPath={videoPath}
               aspectRatio={aspectRatio}
-              onAspectRatioChange={(v) => updateState('aspectRatio', v)}
+              onAspectRatioChange={handleAspectRatioChange}
               cursorData={cursorData}
               onAutoZoomApply={handleAutoZoomApply}
               nextZoomId={nextZoomIdRef.current}
+              spotlightRegions={spotlightRegions}
+              onSpotlightAdded={handleSpotlightAdded}
+              onSpotlightSpanChange={handleSpotlightSpanChange}
+              onSpotlightDelete={handleSpotlightDelete}
+              selectedSpotlightId={selectedSpotlightId}
+              onSelectSpotlight={handleSelectSpotlight}
+              onAutoSpotlightApply={handleAutoSpotlightApply}
+              nextSpotlightId={nextSpotlightIdRef.current}
+              onAddKeyframeAtPlayhead={handleAddKeyframeAtPlayhead}
+              onDeleteKeyframesAtTime={handleDeleteKeyframesAtTime}
+              onMoveKeyframesAtTime={handleMoveKeyframesAtTime}
             />
               </div>
             </Panel>
@@ -1161,6 +2010,9 @@ export default function VideoEditor() {
           selectedZoomDepth={selectedZoomId ? zoomRegions.find(z => z.id === selectedZoomId)?.depth : null}
           onZoomDepthChange={(depth) => selectedZoomId && handleZoomDepthChange(depth)}
           selectedZoomId={selectedZoomId}
+          zoomEnterTransitionMs={selectedZoomId ? (zoomRegions.find(z => z.id === selectedZoomId)?.enterTransition?.durationMs ?? 400) : 400}
+          zoomExitTransitionMs={selectedZoomId ? (zoomRegions.find(z => z.id === selectedZoomId)?.exitTransition?.durationMs ?? 400) : 400}
+          onZoomTransitionChange={handleZoomTransitionChange}
           onZoomDelete={handleZoomDelete}
           selectedTrimId={selectedTrimId}
           onTrimDelete={handleTrimDelete}
@@ -1205,13 +2057,33 @@ export default function VideoEditor() {
           cursorHighlight={cursorHighlight}
           onCursorHighlightChange={(v) => updateState('cursorHighlight', v)}
           hasCursorData={cursorData.length > 0}
-          zoomRegions={zoomRegions}
-          onZoomTransitionChange={handleZoomTransitionChange}
+          spotlightRegions={spotlightRegions}
+          selectedSpotlightId={selectedSpotlightId}
+          onSpotlightUpdate={handleSpotlightUpdate}
+          onSpotlightDelete={handleSpotlightDelete}
+          playheadInsideSpotlight={playheadInsideSelectedSpotlight}
+          activeSpotlightValues={activeSpotlightValues}
+          currentSpotlightKeyframeTime={currentSpotlightKeyframeTime}
+          onAddSpotlightPoint={handleAddSpotlightPoint}
+          onHoldSpotlightPoint={handleHoldSpotlightPoint}
+          onSpotlightPropertyChange={handleSpotlightPropertyChange}
           videoSegments={videoSegments}
           selectedSegmentId={selectedSegmentId}
           onSegmentTransformChange={handleSegmentTransformChange}
           onSegmentTransformReset={handleSegmentTransformReset}
           onSegmentDelete={handleDeleteSegment}
+          playheadRelativeTimeMs={(() => {
+            if (!selectedSegmentId) return 0;
+            const seg = videoSegments.find(s => s.id === selectedSegmentId);
+            if (!seg) return 0;
+            const sourceMs = Math.round(currentTime * 1000);
+            return Math.max(0, sourceMs - seg.sourceStartMs);
+          })()}
+          activeZoomTransform={activeZoomTransform}
+          playheadInsideSelectedZoom={playheadInsideSelectedZoom}
+          onAddZoomPanPoint={handleAddZoomPanPoint}
+          onHoldPanPoint={handleHoldPanPoint}
+          onZoomPropertyChange={handleZoomPropertyChange}
         />
       </div>
 

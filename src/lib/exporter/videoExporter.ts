@@ -2,7 +2,7 @@ import type { ExportConfig, ExportProgress, ExportResult } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
-import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 import { extractAudioBuffer, computeAudioRangesAfterTrim } from './audioExtractor';
 import { computeGapRegions } from '@/lib/segmentUtils';
@@ -10,7 +10,6 @@ import { computeGapRegions } from '@/lib/segmentUtils';
 interface VideoExporterConfig extends ExportConfig {
   videoUrl: string;
   wallpaper: string;
-  zoomRegions: ZoomRegion[];
   trimRegions?: TrimRegion[];
   showShadow: boolean;
   shadowIntensity: number;
@@ -21,6 +20,7 @@ interface VideoExporterConfig extends ExportConfig {
   videoPadding?: number;
   cropRegion: CropRegion;
   annotationRegions?: AnnotationRegion[];
+  spotlightRegions?: SpotlightRegion[];
   previewWidth?: number;
   previewHeight?: number;
   cursorData?: CursorFrame[];
@@ -103,7 +103,7 @@ export class VideoExporter {
         width: this.config.width,
         height: this.config.height,
         wallpaper: this.config.wallpaper,
-        zoomRegions: this.config.zoomRegions,
+        videoSegments: this.config.videoSegments,
         showShadow: this.config.showShadow,
         shadowIntensity: this.config.shadowIntensity,
         showBlur: this.config.showBlur,
@@ -114,6 +114,7 @@ export class VideoExporter {
         videoWidth: videoInfo.width,
         videoHeight: videoInfo.height,
         annotationRegions: this.config.annotationRegions,
+        spotlightRegions: this.config.spotlightRegions,
         previewWidth: this.config.previewWidth,
         previewHeight: this.config.previewHeight,
         cursorData: this.config.cursorData,

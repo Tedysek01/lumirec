@@ -2,12 +2,11 @@ import type React from "react";
 import { useEffect, useRef, useImperativeHandle, forwardRef, useState, useMemo, useCallback } from "react";
 import { getAssetPath } from "@/lib/assetPath";
 import { Application, Container, Sprite, Graphics, BlurFilter, Texture, VideoSource } from 'pixi.js';
-import { ZOOM_DEPTH_SCALES, type ZoomRegion, type ZoomFocus, type ZoomDepth, type TrimRegion, type AnnotationRegion, type VideoSegment } from "./types";
-import { findSegmentAtPlaybackTime } from "@/lib/segmentUtils";
-import { resolveTransformAtTime } from "@/lib/keyframeInterpolation";
-import { DEFAULT_FOCUS, SMOOTHING_FACTOR, MIN_DELTA } from "./videoPlayback/constants";
+import { type ZoomRegion, type ZoomFocus, type ZoomDepth, type TrimRegion, type AnnotationRegion, type SpotlightRegion, type VideoSegment, getSpotlightFadeOpacity } from "./types";
+import { findSegmentAtSourceTime } from "@/lib/segmentUtils";
+import { resolveTransformAtTime, resolveSpotlightAtTime } from "@/lib/keyframeInterpolation";
+import { DEFAULT_FOCUS } from "./videoPlayback/constants";
 import { clamp01 } from "./videoPlayback/mathUtils";
-import { findDominantRegion } from "./videoPlayback/zoomRegionUtils";
 import { clampFocusToStage as clampFocusToStageUtil } from "./videoPlayback/focusUtils";
 import { updateOverlayIndicator } from "./videoPlayback/overlayUtils";
 import { layoutVideoContent as layoutVideoContentUtil } from "./videoPlayback/layoutUtils";
@@ -15,9 +14,9 @@ import { applyZoomTransform } from "./videoPlayback/zoomTransform";
 import { createVideoEventHandlers } from "./videoPlayback/videoEventHandlers";
 import { type AspectRatio, formatAspectRatioForCSS } from "@/utils/aspectRatioUtils";
 import { AnnotationOverlay } from "./AnnotationOverlay";
+import { SpotlightOverlay } from "./SpotlightOverlay";
 import type { CursorFrame, CursorHighlightConfig } from "@/lib/cursorTracker";
 import { CursorHighlightOverlay } from "./videoPlayback/cursorHighlightRenderer";
-import { computeTransitionState } from "./videoPlayback/transitionEngine";
 
 interface VideoPlaybackProps {
   videoPath: string;
@@ -49,6 +48,11 @@ interface VideoPlaybackProps {
   cursorData?: CursorFrame[];
   cursorHighlight?: CursorHighlightConfig;
   videoSegments?: VideoSegment[];
+  spotlightRegions?: SpotlightRegion[];
+  selectedSpotlightId?: string | null;
+  onSelectSpotlight?: (id: string | null) => void;
+  onSpotlightPositionChange?: (id: string, position: { x: number; y: number }) => void;
+  onSpotlightSizeChange?: (id: string, size: { width: number; height: number }) => void;
 }
 
 export interface VideoPlaybackRef {
@@ -91,6 +95,11 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   cursorData = [],
   cursorHighlight,
   videoSegments = [],
+  spotlightRegions = [],
+  selectedSpotlightId,
+  onSelectSpotlight,
+  onSpotlightPositionChange,
+  onSpotlightSizeChange,
 }, ref) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -647,33 +656,52 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
     const videoContainer = videoContainerRef.current;
     if (!app || !videoSprite || !videoContainer) return;
 
-    const applyTransform = (motionIntensity: number, dominantRegion: ZoomRegion | null) => {
+    const ticker = () => {
       const cameraContainer = cameraContainerRef.current;
       if (!cameraContainer) return;
 
+      const timeMs = currentTimeRef.current;
       const state = animationStateRef.current;
 
-      // Compute transition state if a dominant region has transitions
-      const timeMs = currentTimeRef.current;
-      const transitionState = dominantRegion
-        ? computeTransitionState(dominantRegion, timeMs)
-        : undefined;
+      // Resolve segment transform (now includes zoom, focusX, focusY)
+      let zoomScale = 1;
+      let focusXVal = DEFAULT_FOCUS.cx;
+      let focusYVal = DEFAULT_FOCUS.cy;
+      let segmentTransform: import('./types').SegmentTransform | undefined;
 
-      // Resolve segment transform at current playback time
-      let resolvedSegmentTransform: import('./types').SegmentTransform | undefined;
       const segments = videoSegmentsRef.current;
       if (segments.length > 0) {
-        const seg = findSegmentAtPlaybackTime(segments, timeMs);
+        // timeMs is source time (video.currentTime * 1000), so use source-time lookup
+        const seg = findSegmentAtSourceTime(segments, timeMs);
         if (seg) {
-          const relativeTime = timeMs - seg.timelineStartMs;
-          resolvedSegmentTransform = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
-          // Only pass if non-identity
-          const t = resolvedSegmentTransform;
-          if (t.rotation === 0 && t.scaleX === 1 && t.scaleY === 1 && t.positionX === 0 && t.positionY === 0) {
-            resolvedSegmentTransform = undefined;
+          const relativeTime = timeMs - seg.sourceStartMs;
+          const resolved = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
+
+          // Extract zoom camera properties
+          zoomScale = resolved.zoom;
+          focusXVal = resolved.focusX;
+          focusYVal = resolved.focusY;
+
+          // Pass remaining transform properties if non-identity
+          if (resolved.rotation !== 0 || resolved.scaleX !== 1 || resolved.scaleY !== 1 || resolved.positionX !== 0 || resolved.positionY !== 0) {
+            segmentTransform = resolved;
           }
         }
       }
+
+      const prevScale = state.scale;
+      const prevFocusX = state.focusX;
+      const prevFocusY = state.focusY;
+
+      state.scale = zoomScale;
+      state.focusX = focusXVal;
+      state.focusY = focusYVal;
+
+      const motionIntensity = Math.max(
+        Math.abs(state.scale - prevScale),
+        Math.abs(state.focusX - prevFocusX),
+        Math.abs(state.focusY - prevFocusY)
+      );
 
       applyZoomTransform({
         cameraContainer,
@@ -686,84 +714,12 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         motionIntensity,
         isPlaying: isPlayingRef.current,
         motionBlurEnabled: motionBlurEnabledRef.current,
-        transitionState,
-        segmentTransform: resolvedSegmentTransform,
+        segmentTransform,
       });
-    };
-
-    const ticker = () => {
-      const { region, strength } = findDominantRegion(zoomRegionsRef.current, currentTimeRef.current);
-      
-      const defaultFocus = DEFAULT_FOCUS;
-      let targetScaleFactor = 1;
-      let targetFocus = defaultFocus;
-
-      // If a zoom is selected but video is not playing, show default unzoomed view
-      // (the overlay will show where the zoom will be)
-      const selectedId = selectedZoomIdRef.current;
-      const hasSelectedZoom = selectedId !== null;
-      const shouldShowUnzoomedView = hasSelectedZoom && !isPlayingRef.current;
-
-      if (region && strength > 0 && !shouldShowUnzoomedView) {
-        const zoomScale = ZOOM_DEPTH_SCALES[region.depth];
-        const regionFocus = clampFocusToStage(region.focus, region.depth);
-        
-        // Interpolate scale and focus based on region strength
-        targetScaleFactor = 1 + (zoomScale - 1) * strength;
-        targetFocus = {
-          cx: defaultFocus.cx + (regionFocus.cx - defaultFocus.cx) * strength,
-          cy: defaultFocus.cy + (regionFocus.cy - defaultFocus.cy) * strength,
-        };
-      }
-
-      const state = animationStateRef.current;
-
-      const prevScale = state.scale;
-      const prevFocusX = state.focusX;
-      const prevFocusY = state.focusY;
-
-      const scaleDelta = targetScaleFactor - state.scale;
-      const focusXDelta = targetFocus.cx - state.focusX;
-      const focusYDelta = targetFocus.cy - state.focusY;
-
-      let nextScale = prevScale;
-      let nextFocusX = prevFocusX;
-      let nextFocusY = prevFocusY;
-
-      if (Math.abs(scaleDelta) > MIN_DELTA) {
-        nextScale = prevScale + scaleDelta * SMOOTHING_FACTOR;
-      } else {
-        nextScale = targetScaleFactor;
-      }
-
-      if (Math.abs(focusXDelta) > MIN_DELTA) {
-        nextFocusX = prevFocusX + focusXDelta * SMOOTHING_FACTOR;
-      } else {
-        nextFocusX = targetFocus.cx;
-      }
-
-      if (Math.abs(focusYDelta) > MIN_DELTA) {
-        nextFocusY = prevFocusY + focusYDelta * SMOOTHING_FACTOR;
-      } else {
-        nextFocusY = targetFocus.cy;
-      }
-
-      state.scale = nextScale;
-      state.focusX = nextFocusX;
-      state.focusY = nextFocusY;
-
-      const motionIntensity = Math.max(
-        Math.abs(nextScale - prevScale),
-        Math.abs(nextFocusX - prevFocusX),
-        Math.abs(nextFocusY - prevFocusY)
-      );
-
-      applyTransform(motionIntensity, region);
 
       // Update cursor highlight overlay
       const cursorOverlay = cursorHighlightOverlayRef.current;
       if (cursorOverlay && cursorDataRef.current.length > 0) {
-        const timeMs = currentTimeRef.current;
         const bOff = baseOffsetRef.current;
         const bScale = baseScaleRef.current;
         const fullW = lockedVideoDimensionsRef.current?.width || videoRef.current?.videoWidth || 0;
@@ -778,7 +734,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         app.ticker.remove(ticker);
       }
     };
-  }, [pixiReady, videoReady, clampFocusToStage]);
+  }, [pixiReady, videoReady]);
 
   const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
     const video = e.currentTarget;
@@ -900,6 +856,77 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
             className="absolute rounded-md border border-primary/80 bg-primary/20 shadow-[0_0_0_1px_rgba(109,213,168,0.35)]"
             style={{ display: 'none', pointerEvents: 'none' }}
           />
+          {/* Spotlight dim overlay */}
+          {(() => {
+            const timeMs = Math.round(currentTime * 1000);
+            const containerW = overlayRef.current?.clientWidth || 800;
+            const containerH = overlayRef.current?.clientHeight || 600;
+            // Render all spotlights that have any opacity (including fade-in/out edges)
+            return spotlightRegions.map((spot) => {
+              const opacity = getSpotlightFadeOpacity(spot, timeMs);
+              if (opacity <= 0) return null;
+              // Resolve animated values when keyframes exist
+              const relTime = timeMs - spot.startMs;
+              const resolved = spot.keyframes?.length
+                ? resolveSpotlightAtTime(spot.keyframes, relTime, spot)
+                : spot;
+              const sx = (resolved.x / 100) * containerW;
+              const sy = (resolved.y / 100) * containerH;
+              const sw = (resolved.width / 100) * containerW;
+              const sh = (resolved.height / 100) * containerH;
+              const br = spot.borderRadius;
+              return (
+                <svg
+                  key={`spotlight-dim-${spot.id}`}
+                  className="absolute inset-0"
+                  width={containerW}
+                  height={containerH}
+                  style={{ pointerEvents: 'none', zIndex: 700 }}
+                >
+                  <defs>
+                    <mask id={`spotlight-mask-${spot.id}`}>
+                      <rect x="0" y="0" width={containerW} height={containerH} fill="white" />
+                      <rect x={sx} y={sy} width={sw} height={sh} rx={br} ry={br} fill="black" />
+                    </mask>
+                  </defs>
+                  <rect
+                    x="0" y="0"
+                    width={containerW} height={containerH}
+                    fill={`rgba(0,0,0,${opacity})`}
+                    mask={`url(#spotlight-mask-${spot.id})`}
+                  />
+                </svg>
+              );
+            });
+          })()}
+          {/* Spotlight interactive overlays */}
+          {(() => {
+            const timeMs = Math.round(currentTime * 1000);
+            const activeSpotlights = spotlightRegions.filter(s =>
+              s.id === selectedSpotlightId || (timeMs >= s.startMs && timeMs <= s.endMs)
+            );
+            const containerW = overlayRef.current?.clientWidth || 800;
+            const containerH = overlayRef.current?.clientHeight || 600;
+            return activeSpotlights.map((spot) => {
+              // Resolve animated values when keyframes exist
+              const relTime = timeMs - spot.startMs;
+              const resolvedSpot = spot.keyframes?.length
+                ? { ...spot, ...resolveSpotlightAtTime(spot.keyframes, relTime, spot) }
+                : spot;
+              return (
+              <SpotlightOverlay
+                key={spot.id}
+                spotlight={resolvedSpot}
+                isSelected={spot.id === selectedSpotlightId}
+                containerWidth={containerW}
+                containerHeight={containerH}
+                onPositionChange={(id, pos) => onSpotlightPositionChange?.(id, pos)}
+                onSizeChange={(id, size) => onSpotlightSizeChange?.(id, size)}
+                onClick={(id) => onSelectSpotlight?.(id)}
+              />
+              );
+            });
+          })()}
           {(() => {
             const filtered = (annotationRegions || []).filter((annotation) => {
               if (typeof annotation.startMs !== 'number' || typeof annotation.endMs !== 'number') return false;

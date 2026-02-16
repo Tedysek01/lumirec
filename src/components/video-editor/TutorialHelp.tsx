@@ -7,7 +7,55 @@ import {
     DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { HelpCircle, Scissors, ArrowRight } from "lucide-react";
+import {
+    HelpCircle,
+    ZoomIn,
+    Lightbulb,
+    MessageSquare,
+    Scissors,
+    Diamond,
+    MousePointerClick,
+} from "lucide-react";
+
+function Kbd({ children }: { children: React.ReactNode }) {
+    return (
+        <kbd className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 bg-accent/80 border border-border/50 rounded text-[10px] font-mono text-foreground/90 leading-none">
+            {children}
+        </kbd>
+    );
+}
+
+function FeatureRow({
+    icon,
+    color,
+    label,
+    shortcut,
+    description,
+}: {
+    icon: React.ReactNode;
+    color: string;
+    label: string;
+    shortcut: string;
+    description: string;
+}) {
+    return (
+        <div className="flex items-start gap-3 py-2">
+            <div
+                className="mt-0.5 w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
+                style={{ background: `${color}20`, color }}
+            >
+                {icon}
+            </div>
+            <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-foreground">{label}</span>
+                    <Kbd>{shortcut}</Kbd>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{description}</p>
+            </div>
+        </div>
+    );
+}
 
 export function TutorialHelp() {
     return (
@@ -19,123 +67,117 @@ export function TutorialHelp() {
                     className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-all gap-1.5"
                 >
                     <HelpCircle className="w-3.5 h-3.5" />
-                    <span className="font-medium">How trimming works</span>
+                    <span className="font-medium">Editor guide</span>
                 </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl bg-background border-border/40 [&>button]:text-muted-foreground [&>button:hover]:text-white">
+            <DialogContent className="max-w-lg bg-background border-border/40 [&>button]:text-muted-foreground [&>button:hover]:text-white">
                 <DialogHeader>
-                    <DialogTitle className="text-xl font-semibold text-foreground flex items-center gap-2">
-                        <Scissors className="w-5 h-5 text-[#ef4444]" /> How Trimming Works
+                    <DialogTitle className="text-lg font-semibold text-foreground">
+                        Editor Guide
                     </DialogTitle>
                     <DialogDescription className="text-muted-foreground">
-                        Understanding how to cut out unwanted parts of your video.
+                        Timeline tools and keyboard shortcuts.
                     </DialogDescription>
                 </DialogHeader>
-                <div className="mt-4 space-y-8">
-                    {/* Explanation */}
-                    <div className="bg-secondary rounded-lg p-4 border border-border/30">
-                        <p className="text-foreground/80 leading-relaxed">
-                            The Trim tool works by defining the segments you want to
-                            <span className="text-[#ef4444] font-bold"> remove</span>. Any part
-                            of the timeline that is
-                            <span className="text-[#ef4444] font-bold"> covered</span> by a red
-                            trim segment will be cut out when you export.
-                        </p>
-                    </div>
-                    {/* Visual Illustration */}
-                    <div className="space-y-2">
-                        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                            Visual Example
-                        </h3>
-                        <div className="relative h-24 bg-[#000] rounded-lg border border-border/40 flex items-center px-4 overflow-hidden select-none">
-                            {/* Background track (Kept parts) */}
-                            <div className="absolute inset-x-4 h-2 bg-slate-600 rounded-full overflow-hidden">
-                                {/* Solid line representing video */}
-                            </div>
-                            {/* Removed Segment 1 */}
-                            <div
-                                className="absolute left-[20%] h-8 bg-[#ef4444]/20 border border-[#ef4444] rounded flex flex-col items-center justify-center z-10"
-                                style={{ width: "20%" }}
-                            >
-                                <span className="text-[10px] font-bold text-[#ef4444] bg-black/50 px-1 rounded">
-                                    REMOVED
-                                </span>
-                            </div>
-                            {/* Removed Segment 2 */}
-                            <div
-                                className="absolute left-[65%] h-8 bg-[#ef4444]/20 border border-[#ef4444] rounded flex flex-col items-center justify-center z-10"
-                                style={{ width: "15%" }}
-                            >
-                                <span className="text-[10px] font-bold text-[#ef4444] bg-black/50 px-1 rounded">
-                                    REMOVED
-                                </span>
-                            </div>
-                            {/* Labels for kept parts */}
-                            <div className="absolute left-[5%] text-[10px] text-muted-foreground font-medium">
-                                Kept
-                            </div>
-                            <div className="absolute left-[50%] text-[10px] text-muted-foreground font-medium">
-                                Kept
-                            </div>
-                            <div className="absolute left-[90%] text-[10px] text-muted-foreground font-medium">
-                                Kept
-                            </div>
-                        </div>
-                        <div className="flex justify-center mt-2">
 
-                            <ArrowRight className="w-4 h-4 text-slate-600 rotate-90" />
-                        </div>
-                        {/* Result */}
-                        <div className="relative h-12 bg-[#000] rounded-lg border border-border/40 flex items-center justify-center gap-1 px-4 select-none">
-                            <div
-                                className="h-8 bg-slate-700 rounded flex items-center justify-center opacity-80"
-                                style={{ width: "30%" }}
-                            >
-                                <span className="text-[10px] text-white font-medium">
-                                    Part 1
-                                </span>
-                            </div>
-                            <div
-                                className="h-8 bg-slate-700 rounded flex items-center justify-center opacity-80"
-                                style={{ width: "30%" }}
-                            >
-                                <span className="text-[10px] text-white font-medium">
-                                    Part 2
-                                </span>
-                            </div>
-                            <div
-                                className="h-8 bg-slate-700 rounded flex items-center justify-center opacity-80"
-                                style={{ width: "30%" }}
-                            >
-                                <span className="text-[10px] text-white font-medium">
-                                    Part 3
-                                </span>
-                            </div>
-                            <span className="absolute right-4 text-xs text-muted-foreground">
-                                Final Video
-                            </span>
+                <div className="mt-2 space-y-5">
+                    {/* Timeline tools */}
+                    <div>
+                        <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-1">
+                            Timeline tools
+                        </h3>
+                        <div className="divide-y divide-border/20">
+                            <FeatureRow
+                                icon={<ZoomIn className="w-3.5 h-3.5" />}
+                                color="#3B82F6"
+                                label="Zoom"
+                                shortcut="Z"
+                                description="Add a zoom region at the playhead. Drag edges to adjust timing, use the settings panel to set zoom level and focus point."
+                            />
+                            <FeatureRow
+                                icon={<Lightbulb className="w-3.5 h-3.5" />}
+                                color="#7C3AED"
+                                label="Spotlight"
+                                shortcut="S"
+                                description="Dim the screen and highlight a specific area. Great for drawing attention to UI elements in demos."
+                            />
+                            <FeatureRow
+                                icon={<MessageSquare className="w-3.5 h-3.5" />}
+                                color="#D97706"
+                                label="Annotation"
+                                shortcut="A"
+                                description="Add text, images, or shapes on top of the video. Drag to position, resize with handles."
+                            />
+                            <FeatureRow
+                                icon={<Diamond className="w-3.5 h-3.5" />}
+                                color="#FFE100"
+                                label="Keyframe"
+                                shortcut="F"
+                                description="Add a keyframe at the playhead to animate transforms (rotation, scale, position) over time."
+                            />
+                            <FeatureRow
+                                icon={<Scissors className="w-3.5 h-3.5" />}
+                                color="#EF4444"
+                                label="Razor / Split"
+                                shortcut="C"
+                                description="Activate the razor tool to click on a segment and split it. Press V to switch back to the select tool."
+                            />
                         </div>
                     </div>
-                    {/* Steps */}
-                    <div className="grid grid-cols-2 gap-4">
-                        <div className="p-3 rounded bg-secondary border border-border/30">
-                            <div className="text-[#ef4444] font-bold mb-1">
-                                1. Add Trim
+
+                    {/* Keyboard shortcuts */}
+                    <div>
+                        <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">
+                            Keyboard shortcuts
+                        </h3>
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Play / Pause</span>
+                                <Kbd>Space</Kbd>
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                                Press
-                                <kbd className="bg-accent px-1 rounded text-foreground/80">T</kbd>
-                                or click the scissors icon to mark a section for removal.
-                            </p>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Split at playhead</span>
+                                <div className="flex gap-0.5"><Kbd>⌘</Kbd><Kbd>B</Kbd></div>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Delete selected</span>
+                                <Kbd>⌫</Kbd>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Cycle annotations</span>
+                                <Kbd>Tab</Kbd>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Razor tool</span>
+                                <Kbd>C</Kbd>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Select tool</span>
+                                <Kbd>V</Kbd>
+                            </div>
                         </div>
-                        <div className="p-3 rounded bg-secondary border border-border/30">
-                            <div className="text-[#ef4444] font-bold mb-1">
-                                2. Adjust
+                    </div>
+
+                    {/* Navigation */}
+                    <div>
+                        <h3 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-widest mb-2">
+                            Navigation
+                        </h3>
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Pan timeline</span>
+                                <span className="text-muted-foreground/60 flex items-center gap-1">
+                                    <MousePointerClick className="w-3 h-3" /> Scroll horizontally
+                                </span>
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                                Drag the edges of the red region to cover exactly what you want
-                                to cut out.
-                            </p>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Zoom timeline</span>
+                                <div className="flex gap-0.5"><Kbd>⌘</Kbd><span className="text-muted-foreground/60 text-[10px]">+ Scroll</span></div>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="text-muted-foreground">Seek</span>
+                                <span className="text-muted-foreground/60 text-[10px]">Click timeline</span>
+                            </div>
                         </div>
                     </div>
                 </div>

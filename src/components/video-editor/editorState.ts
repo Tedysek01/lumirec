@@ -1,4 +1,4 @@
-import type { ZoomRegion, TrimRegion, AnnotationRegion, CropRegion, VideoSegment } from "./types";
+import type { ZoomRegion, TrimRegion, AnnotationRegion, CropRegion, VideoSegment, SpotlightRegion } from "./types";
 import { DEFAULT_CROP_REGION } from "./types";
 import type { AspectRatio } from "@/utils/aspectRatioUtils";
 import { type CursorHighlightConfig, DEFAULT_CURSOR_HIGHLIGHT_CONFIG } from "@/lib/cursorTracker";
@@ -20,6 +20,7 @@ export interface EditorUndoableState {
   trimRegions: TrimRegion[];
   videoSegments: VideoSegment[];
   annotationRegions: AnnotationRegion[];
+  spotlightRegions: SpotlightRegion[];
   aspectRatio: AspectRatio;
   cursorHighlight: CursorHighlightConfig;
 }
@@ -39,6 +40,7 @@ export function createInitialEditorState(wallpaper: string = DEFAULT_WALLPAPER):
     trimRegions: [],
     videoSegments: [],
     annotationRegions: [],
+    spotlightRegions: [],
     aspectRatio: '16:9',
     cursorHighlight: { ...DEFAULT_CURSOR_HIGHLIGHT_CONFIG },
   };

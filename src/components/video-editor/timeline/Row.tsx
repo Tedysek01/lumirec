@@ -3,23 +3,26 @@ import type { RowDefinition } from "dnd-timeline";
 
 interface RowProps extends RowDefinition {
   children: React.ReactNode;
-  overlay?: boolean;
+  height?: number;
+  collapsed?: boolean;
 }
 
-export default function Row({ id, children, overlay = false }: RowProps) {
+export default function Row({ id, children, height, collapsed = false }: RowProps) {
   const { setNodeRef, rowWrapperStyle, rowStyle } = useRow({ id });
 
   return (
     <div
-      className="border-b border-border bg-surface-0"
+      className="border-b border-border/20 bg-surface-0"
       style={{
         ...rowWrapperStyle,
-        ...(overlay
-          ? { position: 'absolute' as const, inset: 0, pointerEvents: 'none' as const, zIndex: 20, minHeight: 'unset', marginBottom: 0, border: 'none', background: 'transparent' }
-          : { minHeight: 48, marginBottom: 4 }),
+        minHeight: collapsed ? 0 : (height ?? 48),
+        height: collapsed ? 0 : height,
+        overflow: collapsed ? 'hidden' : undefined,
+        transition: 'height 0.2s ease, min-height 0.2s ease',
+        marginBottom: 0,
       }}
     >
-      <div ref={setNodeRef} style={{ ...rowStyle, ...(overlay ? { height: '100%' } : {}) }}>
+      <div ref={setNodeRef} style={rowStyle}>
         {children}
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useItem } from "dnd-timeline";
+import { useItem, useTimelineContext } from "dnd-timeline";
 import type { Span } from "dnd-timeline";
 import { cn } from "@/lib/utils";
 import { Film } from "lucide-react";
@@ -45,8 +45,19 @@ export default function VideoSegmentItem({
     span,
     data: { rowId },
   });
+  const { range, valueToPixels } = useTimelineContext();
 
   const durationMs = segment.sourceEndMs - segment.sourceStartMs;
+
+  // How far (px) the segment start/end are from the visible range edges.
+  // Negative means that boundary is off-screen.
+  const deltaXStart = valueToPixels(span.start - range.start);
+  const deltaXEnd = valueToPixels(range.end - span.end);
+  const startVisible = deltaXStart >= -1; // segment start is on-screen
+  const endVisible = deltaXEnd >= -1;     // segment end is on-screen
+
+  // Thumbnail strip: offset so the visible portion shows correct frames
+  const clippedLeft = Math.max(0, -deltaXStart);
 
   const handleClick = (event: React.MouseEvent) => {
     event.stopPropagation();
@@ -88,54 +99,63 @@ export default function VideoSegmentItem({
           style={{ height: 48, color: '#fff', cursor: razorToolActive ? SCISSORS_CURSOR : undefined }}
           onClick={handleClick}
         >
-          {/* Thumbnail filmstrip background */}
+          {/* Thumbnail filmstrip background — offset to show correct portion when panned */}
           {hasThumbnails && (
             <div
-              className="absolute inset-0 flex overflow-hidden opacity-40 pointer-events-none"
+              className="absolute inset-0 overflow-hidden opacity-40 pointer-events-none"
               style={{ zIndex: 0 }}
             >
-              {thumbnails
-                .filter(
-                  (t) =>
-                    t.timeMs >= segment.sourceStartMs &&
-                    t.timeMs < segment.sourceEndMs,
-                )
-                .map((t) => (
-                  <img
-                    key={t.timeMs}
-                    src={t.dataUrl}
-                    alt=""
-                    className="h-full object-cover flex-shrink-0"
-                    style={{ width: t.width }}
-                    draggable={false}
-                  />
-                ))}
+              <div
+                className="flex h-full"
+                style={{ transform: `translateX(${-clippedLeft}px)` }}
+              >
+                {thumbnails
+                  .filter(
+                    (t) =>
+                      t.timeMs >= segment.sourceStartMs &&
+                      t.timeMs < segment.sourceEndMs,
+                  )
+                  .map((t) => (
+                    <img
+                      key={t.timeMs}
+                      src={t.dataUrl}
+                      alt=""
+                      className="h-full object-cover flex-shrink-0"
+                      style={{ width: t.width }}
+                      draggable={false}
+                    />
+                  ))}
+              </div>
             </div>
           )}
 
-          {/* Resize handles */}
-          <div
-            className={cn(glassStyles.zoomEndCap, glassStyles.left)}
-            style={{
-              cursor: 'col-resize',
-              pointerEvents: 'auto',
-              width: 6,
-              opacity: 0.9,
-              background: '#2563EB',
-            }}
-            title="Trim left"
-          />
-          <div
-            className={cn(glassStyles.zoomEndCap, glassStyles.right)}
-            style={{
-              cursor: 'col-resize',
-              pointerEvents: 'auto',
-              width: 6,
-              opacity: 0.9,
-              background: '#2563EB',
-            }}
-            title="Trim right"
-          />
+          {/* Resize handles — only show when segment boundary is in view */}
+          {startVisible && (
+            <div
+              className={cn(glassStyles.zoomEndCap, glassStyles.left)}
+              style={{
+                cursor: 'col-resize',
+                pointerEvents: 'auto',
+                width: 6,
+                opacity: 0.9,
+                background: '#2563EB',
+              }}
+              title="Trim left"
+            />
+          )}
+          {endVisible && (
+            <div
+              className={cn(glassStyles.zoomEndCap, glassStyles.right)}
+              style={{
+                cursor: 'col-resize',
+                pointerEvents: 'auto',
+                width: 6,
+                opacity: 0.9,
+                background: '#2563EB',
+              }}
+              title="Trim right"
+            />
+          )}
 
           {/* Content */}
           <div className="relative z-10 flex items-center gap-1.5 text-white/90 opacity-80 group-hover:opacity-100 transition-opacity select-none px-2">

@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTimelineContext } from "dnd-timeline";
 import { Button } from "@/components/ui/button";
-import { Plus, Scissors, ZoomIn, MessageSquare, ChevronDown, Check, MousePointer2 } from "lucide-react";
+import { Plus, Scissors, ZoomIn, MessageSquare, Lightbulb, ChevronDown, Check, MousePointer2, Film, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import TimelineWrapper from "./TimelineWrapper";
 import Row from "./Row";
 import Item from "./Item";
 import VideoSegmentItem from "./VideoSegmentItem";
-import KeyframeMarkers from "./KeyframeMarkers";
+import KeyframeTrack from "./KeyframeTrack";
+import TrackLabel from "./TrackLabel";
 import type { Range, Span } from "dnd-timeline";
-import type { ZoomRegion, TrimRegion, AnnotationRegion, VideoSegment } from "../types";
-import { v4 as uuidv4 } from 'uuid';
+import type { ZoomRegion, TrimRegion, AnnotationRegion, VideoSegment, SpotlightRegion } from "../types";
 import { extractThumbnails, type ThumbnailFrame } from "@/lib/thumbnailExtractor";
 import {
   DropdownMenu,
@@ -23,6 +23,7 @@ import { type AspectRatio, getAspectRatioLabel, ASPECT_RATIOS } from "@/utils/as
 import { formatShortcut } from "@/utils/platformUtils";
 import { TutorialHelp } from "../TutorialHelp";
 import { AutoZoomPopover } from "../AutoZoomPopover";
+import { AutoSpotlightPopover } from "../AutoSpotlightPopover";
 import type { CursorFrame } from "@/lib/cursorTracker";
 import { getTotalTimelineDuration, sourceToDisplayTime, displayToSourceTime } from "@/lib/segmentUtils";
 
@@ -30,7 +31,19 @@ const VIDEO_ROW_ID = "row-video";
 const ZOOM_ROW_ID = "row-zoom";
 const TRIM_ROW_ID = "row-trim";
 const ANNOTATION_ROW_ID = "row-annotation";
+const SPOTLIGHT_ROW_ID = "row-spotlight";
 const AUDIO_ROW_ID = "row-audio";
+const TRACK_LABEL_WIDTH = 120;
+
+const TRACK_HEIGHTS: Record<string, number> = {
+  [VIDEO_ROW_ID]: 52,
+  [ZOOM_ROW_ID]: 44,
+  [SPOTLIGHT_ROW_ID]: 44,
+  [TRIM_ROW_ID]: 44,
+  [ANNOTATION_ROW_ID]: 44,
+  [AUDIO_ROW_ID]: 36,
+};
+
 const FALLBACK_RANGE_MS = 1000;
 const TARGET_MARKER_COUNT = 12;
 
@@ -71,6 +84,17 @@ interface TimelineEditorProps {
   cursorData?: CursorFrame[];
   onAutoZoomApply?: (newRegions: ZoomRegion[], nextId: number) => void;
   nextZoomId?: number;
+  spotlightRegions?: SpotlightRegion[];
+  onSpotlightAdded?: (span: Span) => void;
+  onSpotlightSpanChange?: (id: string, span: Span) => void;
+  onSpotlightDelete?: (id: string) => void;
+  selectedSpotlightId?: string | null;
+  onSelectSpotlight?: (id: string | null) => void;
+  onAutoSpotlightApply?: (newRegions: SpotlightRegion[], nextId: number) => void;
+  nextSpotlightId?: number;
+  onAddKeyframeAtPlayhead?: (segmentId: string, relativeTimeMs: number) => void;
+  onDeleteKeyframesAtTime?: (segmentId: string, timeMs: number) => void;
+  onMoveKeyframesAtTime?: (segmentId: string, oldTimeMs: number, newTimeMs: number) => void;
 }
 
 interface TimelineScaleConfig {
@@ -87,7 +111,7 @@ interface TimelineRenderItem {
   span: Span;
   label: string;
   zoomDepth?: number;
-  variant: 'zoom' | 'trim' | 'annotation' | 'video';
+  variant: 'zoom' | 'trim' | 'annotation' | 'spotlight' | 'video';
 }
 
 const SCALE_CANDIDATES = [
@@ -180,19 +204,32 @@ function PlaybackCursor({
   videoDurationMs,
   onSeek,
   timelineRef,
-  keyframes = [],
   videoSegments = [],
 }: {
   currentTimeMs: number;
   videoDurationMs: number;
   onSeek?: (time: number) => void;
   timelineRef: React.RefObject<HTMLDivElement>;
-  keyframes?: { id: string; time: number }[];
   videoSegments?: VideoSegment[];
 }) {
   const { sidebarWidth, direction, range, valueToPixels, pixelsToValue } = useTimelineContext();
   const sideProperty = direction === "rtl" ? "right" : "left";
   const [isDragging, setIsDragging] = useState(false);
+
+  // Derive display-time keyframe positions from real segment keyframes
+  const keyframeDisplayTimes = useMemo(() => {
+    const times: number[] = [];
+    for (const seg of videoSegments) {
+      const seen = new Set<number>();
+      for (const kf of seg.keyframes) {
+        if (!seen.has(kf.timeMs)) {
+          seen.add(kf.timeMs);
+          times.push(seg.timelineStartMs + kf.timeMs);
+        }
+      }
+    }
+    return times;
+  }, [videoSegments]);
 
   useEffect(() => {
     if (!isDragging) return;
@@ -209,14 +246,15 @@ function PlaybackCursor({
 
       // Snap to nearby keyframe if within threshold (150ms)
       const snapThresholdMs = 150;
-      const nearbyKeyframe = keyframes.find(kf =>
-        Math.abs(kf.time - absoluteMs) <= snapThresholdMs &&
-        kf.time >= range.start &&
-        kf.time <= range.end
-      );
-
-      if (nearbyKeyframe) {
-        absoluteMs = nearbyKeyframe.time;
+      for (const displayTime of keyframeDisplayTimes) {
+        if (
+          Math.abs(displayTime - absoluteMs) <= snapThresholdMs &&
+          displayTime >= range.start &&
+          displayTime <= range.end
+        ) {
+          absoluteMs = displayTime;
+          break;
+        }
       }
 
       // Map display time back to source time for seeking
@@ -238,7 +276,7 @@ function PlaybackCursor({
       window.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = '';
     };
-  }, [isDragging, onSeek, timelineRef, sidebarWidth, range.start, range.end, videoDurationMs, pixelsToValue, keyframes]);
+  }, [isDragging, onSeek, timelineRef, sidebarWidth, range.start, range.end, videoDurationMs, pixelsToValue, keyframeDisplayTimes, videoSegments]);
 
   if (videoDurationMs <= 0 || currentTimeMs < 0) {
     return null;
@@ -348,7 +386,7 @@ function TimelineAxis({
 
   return (
     <div
-      className="h-8 bg-background border-b border-border/30 relative overflow-hidden select-none"
+      className="h-8 bg-background border-b border-border/30 relative overflow-hidden select-none sticky top-0 z-20"
       style={{
         [sideProperty === "right" ? "marginRight" : "marginLeft"]: `${sidebarWidth}px`,
       }}
@@ -407,16 +445,23 @@ function Timeline({
   onSelectZoom,
   onSelectTrim,
   onSelectAnnotation,
+  onSelectSpotlight,
   onSelectSegment,
   selectedZoomId,
   selectedTrimId,
   selectedAnnotationId,
+  selectedSpotlightId,
   selectedSegmentId,
-  keyframes = [],
   videoSegments = [],
   razorToolActive = false,
   onSplitSegment,
   thumbnails = [],
+  children,
+  videoKeyframeOverlays,
+  spotlightKeyframeOverlays,
+  collapsedTracks,
+  onToggleTrack,
+  timelineContentRef,
 }: {
   items: TimelineRenderItem[];
   videoDurationMs: number;
@@ -426,16 +471,23 @@ function Timeline({
   onSelectZoom?: (id: string | null) => void;
   onSelectTrim?: (id: string | null) => void;
   onSelectAnnotation?: (id: string | null) => void;
+  onSelectSpotlight?: (id: string | null) => void;
   onSelectSegment?: (id: string | null) => void;
   selectedZoomId: string | null;
   selectedTrimId?: string | null;
   selectedAnnotationId?: string | null;
+  selectedSpotlightId?: string | null;
   selectedSegmentId?: string | null;
-  keyframes?: { id: string; time: number }[];
   videoSegments?: VideoSegment[];
   razorToolActive?: boolean;
   onSplitSegment?: (segmentId: string, sourceTimeMs: number) => void;
   thumbnails?: ThumbnailFrame[];
+  children?: React.ReactNode;
+  videoKeyframeOverlays?: React.ReactNode;
+  spotlightKeyframeOverlays?: React.ReactNode;
+  collapsedTracks?: Set<string>;
+  onToggleTrack?: (trackId: string) => void;
+  timelineContentRef?: React.MutableRefObject<HTMLDivElement | null>;
 }) {
   const { setTimelineRef, style, sidebarWidth, range, pixelsToValue } = useTimelineContext();
   const localTimelineRef = useRef<HTMLDivElement | null>(null);
@@ -443,7 +495,8 @@ function Timeline({
   const setRefs = useCallback((node: HTMLDivElement | null) => {
     setTimelineRef(node);
     localTimelineRef.current = node;
-  }, [setTimelineRef]);
+    if (timelineContentRef) timelineContentRef.current = node;
+  }, [setTimelineRef, timelineContentRef]);
 
   const handleTimelineClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!onSeek || videoDurationMs <= 0) return;
@@ -453,6 +506,7 @@ function Timeline({
     onSelectZoom?.(null);
     onSelectTrim?.(null);
     onSelectAnnotation?.(null);
+    onSelectSpotlight?.(null);
     onSelectSegment?.(null);
 
     const rect = e.currentTarget.getBoundingClientRect();
@@ -467,69 +521,93 @@ function Timeline({
     const timeInSeconds = sourceMs / 1000;
 
     onSeek(timeInSeconds);
-  }, [onSeek, onSelectZoom, onSelectTrim, onSelectAnnotation, onSelectSegment, videoDurationMs, videoSegments, sidebarWidth, range.start, pixelsToValue]);
+  }, [onSeek, onSelectZoom, onSelectTrim, onSelectAnnotation, onSelectSpotlight, onSelectSegment, videoDurationMs, videoSegments, sidebarWidth, range.start, pixelsToValue]);
 
   const zoomItems = items.filter(item => item.rowId === ZOOM_ROW_ID);
   const trimItems = items.filter(item => item.rowId === TRIM_ROW_ID);
   const annotationItems = items.filter(item => item.rowId === ANNOTATION_ROW_ID);
+  const spotlightItems = items.filter(item => item.rowId === SPOTLIGHT_ROW_ID);
+
+  const hasTrimItems = trimItems.length > 0;
 
   return (
-    <div
-      ref={setRefs}
-      style={style}
-      className="select-none bg-background min-h-[140px] relative cursor-pointer group"
-      onClick={handleTimelineClick}
-    >
-      <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff03_1px,transparent_1px)] bg-[length:20px_100%] pointer-events-none" />
-      <TimelineAxis intervalMs={intervalMs} videoDurationMs={videoDurationMs} currentTimeMs={currentTimeMs} />
-      <PlaybackCursor
-        currentTimeMs={currentTimeMs}
-        videoDurationMs={videoDurationMs}
-        onSeek={onSeek}
-        timelineRef={localTimelineRef}
-        keyframes={keyframes}
-        videoSegments={videoSegments}
-      />
+    <div className="flex" style={{ minHeight: 140 }}>
+      {/* Left column: track labels */}
+      <div className="flex flex-col flex-shrink-0" style={{ width: TRACK_LABEL_WIDTH }}>
+        {/* Spacer to match TimelineAxis height — sticky so it stays visible when scrolling */}
+        <div className="h-8 border-b border-border/30 bg-background sticky top-0 z-20" />
 
-      {/* Row order top-to-bottom: Annotations, Trim, Video+Zoom composite, Audio */}
-      <Row id={ANNOTATION_ROW_ID}>
-        {annotationItems.map((item) => (
-          <Item
-            id={item.id}
-            key={item.id}
-            rowId={item.rowId}
-            span={item.span}
-            isSelected={item.id === selectedAnnotationId}
-            onSelect={() => onSelectAnnotation?.(item.id)}
-            variant="annotation"
-          >
-            {item.label}
-          </Item>
-        ))}
-      </Row>
+        <TrackLabel
+          label="Video"
+          icon={<Film className="w-3.5 h-3.5" />}
+          accentColor="#3B82F6"
+          height={TRACK_HEIGHTS[VIDEO_ROW_ID]}
+          collapsed={collapsedTracks?.has(VIDEO_ROW_ID)}
+          onToggleCollapse={() => onToggleTrack?.(VIDEO_ROW_ID)}
+        />
+        <TrackLabel
+          label="Zoom"
+          icon={<ZoomIn className="w-3.5 h-3.5" />}
+          accentColor="#3B82F6"
+          height={TRACK_HEIGHTS[ZOOM_ROW_ID]}
+          collapsed={collapsedTracks?.has(ZOOM_ROW_ID)}
+          onToggleCollapse={() => onToggleTrack?.(ZOOM_ROW_ID)}
+        />
+        <TrackLabel
+          label="Spotlight"
+          icon={<Lightbulb className="w-3.5 h-3.5" />}
+          accentColor="#8B5CF6"
+          height={TRACK_HEIGHTS[SPOTLIGHT_ROW_ID]}
+          collapsed={collapsedTracks?.has(SPOTLIGHT_ROW_ID)}
+          onToggleCollapse={() => onToggleTrack?.(SPOTLIGHT_ROW_ID)}
+        />
+        {hasTrimItems && (
+          <TrackLabel
+            label="Trim"
+            icon={<Scissors className="w-3.5 h-3.5" />}
+            accentColor="#EF4444"
+            height={TRACK_HEIGHTS[TRIM_ROW_ID]}
+            collapsed={collapsedTracks?.has(TRIM_ROW_ID)}
+            onToggleCollapse={() => onToggleTrack?.(TRIM_ROW_ID)}
+          />
+        )}
+        <TrackLabel
+          label="Annotations"
+          icon={<MessageSquare className="w-3.5 h-3.5" />}
+          accentColor="#F59E0B"
+          height={TRACK_HEIGHTS[ANNOTATION_ROW_ID]}
+          collapsed={collapsedTracks?.has(ANNOTATION_ROW_ID)}
+          onToggleCollapse={() => onToggleTrack?.(ANNOTATION_ROW_ID)}
+        />
+        <TrackLabel
+          label="Audio"
+          icon={<Volume2 className="w-3.5 h-3.5" />}
+          accentColor="#6B7280"
+          height={TRACK_HEIGHTS[AUDIO_ROW_ID]}
+          collapsed={collapsedTracks?.has(AUDIO_ROW_ID)}
+          onToggleCollapse={() => onToggleTrack?.(AUDIO_ROW_ID)}
+        />
+      </div>
 
-      {/* Trim row: hidden unless legacy trim regions exist from old projects */}
-      {trimItems.length > 0 && (
-        <Row id={TRIM_ROW_ID}>
-          {trimItems.map((item) => (
-            <Item
-              id={item.id}
-              key={item.id}
-              rowId={item.rowId}
-              span={item.span}
-              isSelected={item.id === selectedTrimId}
-              onSelect={() => onSelectTrim?.(item.id)}
-              variant="trim"
-            >
-              {item.label}
-            </Item>
-          ))}
-        </Row>
-      )}
+      {/* Right column: timeline content */}
+      <div
+        ref={setRefs}
+        style={style}
+        className="flex-1 select-none bg-background relative cursor-pointer group min-w-0"
+        onClick={handleTimelineClick}
+      >
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff03_1px,transparent_1px)] bg-[length:20px_100%] pointer-events-none" />
+        <TimelineAxis intervalMs={intervalMs} videoDurationMs={videoDurationMs} currentTimeMs={currentTimeMs} />
+        <PlaybackCursor
+          currentTimeMs={currentTimeMs}
+          videoDurationMs={videoDurationMs}
+          onSeek={onSeek}
+          timelineRef={localTimelineRef}
+          videoSegments={videoSegments}
+        />
 
-      {/* Video + Zoom composite: zoom overlays on top of video */}
-      <div style={{ position: 'relative' }}>
-        <Row id={VIDEO_ROW_ID}>
+        {/* Row order: Video (with manual keyframe overlays), Zoom (with zoom keyframe overlays), Spotlight, Trim (conditional), Annotations, Audio */}
+        <Row id={VIDEO_ROW_ID} height={TRACK_HEIGHTS[VIDEO_ROW_ID]} collapsed={collapsedTracks?.has(VIDEO_ROW_ID)}>
           {videoSegments.map((segment) => {
             const segDuration = segment.sourceEndMs - segment.sourceStartMs;
             const segSpan: Span = {
@@ -550,8 +628,11 @@ function Timeline({
               />
             );
           })}
+          {/* Manual (non-zoom) keyframe diamond overlays rendered inside the row */}
+          {videoKeyframeOverlays}
         </Row>
-        <Row id={ZOOM_ROW_ID} overlay>
+
+        <Row id={ZOOM_ROW_ID} height={TRACK_HEIGHTS[ZOOM_ROW_ID]} collapsed={collapsedTracks?.has(ZOOM_ROW_ID)}>
           {zoomItems.map((item) => (
             <Item
               id={item.id}
@@ -562,20 +643,72 @@ function Timeline({
               onSelect={() => onSelectZoom?.(item.id)}
               zoomDepth={item.zoomDepth}
               variant="zoom"
-              overlay
+            >
+              {item.label}
+            </Item>
+          ))}
+          {/* Keyframe diamond overlays rendered inside the row */}
+          {children}
+        </Row>
+
+        <Row id={SPOTLIGHT_ROW_ID} height={TRACK_HEIGHTS[SPOTLIGHT_ROW_ID]} collapsed={collapsedTracks?.has(SPOTLIGHT_ROW_ID)}>
+          {spotlightItems.map((item) => (
+            <Item
+              id={item.id}
+              key={item.id}
+              rowId={item.rowId}
+              span={item.span}
+              isSelected={item.id === selectedSpotlightId}
+              onSelect={() => onSelectSpotlight?.(item.id)}
+              variant="spotlight"
+            >
+              {item.label}
+            </Item>
+          ))}
+          {/* Spotlight keyframe diamond overlays */}
+          {spotlightKeyframeOverlays}
+        </Row>
+
+        {hasTrimItems && (
+          <Row id={TRIM_ROW_ID} height={TRACK_HEIGHTS[TRIM_ROW_ID]} collapsed={collapsedTracks?.has(TRIM_ROW_ID)}>
+            {trimItems.map((item) => (
+              <Item
+                id={item.id}
+                key={item.id}
+                rowId={item.rowId}
+                span={item.span}
+                isSelected={item.id === selectedTrimId}
+                onSelect={() => onSelectTrim?.(item.id)}
+                variant="trim"
+              >
+                {item.label}
+              </Item>
+            ))}
+          </Row>
+        )}
+
+        <Row id={ANNOTATION_ROW_ID} height={TRACK_HEIGHTS[ANNOTATION_ROW_ID]} collapsed={collapsedTracks?.has(ANNOTATION_ROW_ID)}>
+          {annotationItems.map((item) => (
+            <Item
+              id={item.id}
+              key={item.id}
+              rowId={item.rowId}
+              span={item.span}
+              isSelected={item.id === selectedAnnotationId}
+              onSelect={() => onSelectAnnotation?.(item.id)}
+              variant="annotation"
             >
               {item.label}
             </Item>
           ))}
         </Row>
-      </div>
 
-      {/* Audio placeholder row */}
-      <Row id={AUDIO_ROW_ID}>
-        <div style={{ height: 32, display: 'flex', alignItems: 'center', paddingLeft: 12 }}>
-          <span className="text-[10px] text-muted-foreground/50 font-medium tracking-wide uppercase select-none">Audio</span>
-        </div>
-      </Row>
+        <Row id={AUDIO_ROW_ID} height={TRACK_HEIGHTS[AUDIO_ROW_ID]} collapsed={collapsedTracks?.has(AUDIO_ROW_ID)}>
+          <div style={{ height: TRACK_HEIGHTS[AUDIO_ROW_ID], display: 'flex', alignItems: 'center', paddingLeft: 12 }}>
+            <span className="text-[10px] text-muted-foreground/50 font-medium tracking-wide uppercase select-none">Audio</span>
+          </div>
+        </Row>
+      </div>
     </div>
   );
 }
@@ -617,6 +750,17 @@ export default function TimelineEditor({
   cursorData = [],
   onAutoZoomApply,
   nextZoomId = 1,
+  spotlightRegions = [],
+  onSpotlightAdded,
+  onSpotlightSpanChange,
+  onSpotlightDelete,
+  selectedSpotlightId,
+  onSelectSpotlight,
+  onAutoSpotlightApply,
+  nextSpotlightId = 1,
+  onAddKeyframeAtPlayhead,
+  onDeleteKeyframesAtTime,
+  onMoveKeyframesAtTime,
 }: TimelineEditorProps) {
   const totalMs = useMemo(() => Math.max(0, Math.round(videoDuration * 1000)), [videoDuration]);
   // Effective total for display: sum of segment durations (no gaps)
@@ -638,14 +782,24 @@ export default function TimelineEditor({
   );
 
   const [range, setRange] = useState<Range>(() => createInitialRange(effectiveTotalMs));
-  const [keyframes, setKeyframes] = useState<{ id: string; time: number }[]>([]);
-  const [selectedKeyframeId, setSelectedKeyframeId] = useState<string | null>(null);
+  const [selectedKeyframeTime, setSelectedKeyframeTime] = useState<number | null>(null);
+  const [selectedKeyframeSegmentId, setSelectedKeyframeSegmentId] = useState<string | null>(null);
   const [shortcuts, setShortcuts] = useState({
-    pan: 'Shift + Ctrl + Scroll',
+    pan: 'Scroll',
     zoom: 'Ctrl + Scroll'
   });
   const timelineContainerRef = useRef<HTMLDivElement>(null);
+  const timelineContentRef = useRef<HTMLDivElement | null>(null);
   const [thumbnails, setThumbnails] = useState<ThumbnailFrame[]>([]);
+  const [collapsedTracks, setCollapsedTracks] = useState<Set<string>>(new Set());
+  const toggleTrack = useCallback((trackId: string) => {
+    setCollapsedTracks(prev => {
+      const next = new Set(prev);
+      if (next.has(trackId)) next.delete(trackId);
+      else next.add(trackId);
+      return next;
+    });
+  }, []);
 
   // Extract thumbnails when video path changes
   useEffect(() => {
@@ -662,32 +816,36 @@ export default function TimelineEditor({
   }, [videoPath]);
 
   useEffect(() => {
-    formatShortcut(['shift', 'mod', 'Scroll']).then(pan => {
-      formatShortcut(['mod', 'Scroll']).then(zoom => {
-        setShortcuts({ pan, zoom });
-      });
+    formatShortcut(['mod', 'Scroll']).then(zoom => {
+      setShortcuts({ pan: 'Scroll', zoom });
     });
   }, []);
 
-  // Add keyframe at current playhead position (display time)
-  const addKeyframe = useCallback(() => {
-    if (effectiveTotalMs === 0) return;
-    const time = Math.max(0, Math.min(currentTimeMs, effectiveTotalMs));
-    if (keyframes.some(kf => Math.abs(kf.time - time) < 1)) return;
-    setKeyframes(prev => [...prev, { id: uuidv4(), time }]);
-  }, [currentTimeMs, effectiveTotalMs, keyframes]);
+  // Add keyframe at current playhead position on the active segment
+  const addKeyframeAtPlayhead = useCallback(() => {
+    if (!onAddKeyframeAtPlayhead) return;
+    // Find the segment under the current playhead (in source time)
+    const sourceMs = Math.round(currentTime * 1000);
+    const segment = videoSegments.find(s => sourceMs >= s.sourceStartMs && sourceMs < s.sourceEndMs);
+    if (!segment) return;
+    // Relative time within the segment
+    const relativeTimeMs = sourceMs - segment.sourceStartMs;
+    onAddKeyframeAtPlayhead(segment.id, relativeTimeMs);
+  }, [currentTime, videoSegments, onAddKeyframeAtPlayhead]);
 
-  // Delete selected keyframe
+  // Delete selected keyframe group
   const deleteSelectedKeyframe = useCallback(() => {
-    if (!selectedKeyframeId) return;
-    setKeyframes(prev => prev.filter(kf => kf.id !== selectedKeyframeId));
-    setSelectedKeyframeId(null);
-  }, [selectedKeyframeId]);
+    if (selectedKeyframeTime === null || !selectedKeyframeSegmentId || !onDeleteKeyframesAtTime) return;
+    onDeleteKeyframesAtTime(selectedKeyframeSegmentId, selectedKeyframeTime);
+    setSelectedKeyframeTime(null);
+    setSelectedKeyframeSegmentId(null);
+  }, [selectedKeyframeTime, selectedKeyframeSegmentId, onDeleteKeyframesAtTime]);
 
-  // Move keyframe to new time position
-  const handleKeyframeMove = useCallback((id: string, newTime: number) => {
-    setKeyframes(prev => prev.map(kf => kf.id === id ? { ...kf, time: Math.max(0, Math.min(newTime, effectiveTotalMs)) } : kf));
-  }, [effectiveTotalMs]);
+  // Handle keyframe selection from KeyframeTrack
+  const handleSelectKeyframeTime = useCallback((segmentId: string, timeMs: number | null) => {
+    setSelectedKeyframeSegmentId(timeMs !== null ? segmentId : null);
+    setSelectedKeyframeTime(timeMs);
+  }, []);
 
   // Delete selected zoom item
   const deleteSelectedZoom = useCallback(() => {
@@ -708,6 +866,12 @@ export default function TimelineEditor({
     onAnnotationDelete(selectedAnnotationId);
     onSelectAnnotation(null);
   }, [selectedAnnotationId, onAnnotationDelete, onSelectAnnotation]);
+
+  const deleteSelectedSpotlight = useCallback(() => {
+    if (!selectedSpotlightId || !onSpotlightDelete || !onSelectSpotlight) return;
+    onSpotlightDelete(selectedSpotlightId);
+    onSelectSpotlight(null);
+  }, [selectedSpotlightId, onSpotlightDelete, onSelectSpotlight]);
 
   useEffect(() => {
     setRange(createInitialRange(effectiveTotalMs));
@@ -782,7 +946,7 @@ export default function TimelineEditor({
       return;
     }
 
-    const defaultDuration = Math.min(1000, totalMs);
+    const defaultDuration = Math.min(3000, totalMs);
     if (defaultDuration <= 0) {
       return;
     }
@@ -804,11 +968,28 @@ export default function TimelineEditor({
       return;
     }
 
-    const actualDuration = Math.min(1000, gapToNext);
+    const actualDuration = Math.min(3000, gapToNext);
     onZoomAdded({ start: startPos, end: startPos + actualDuration });
   }, [videoDuration, totalMs, currentTimeMs, videoSegments, zoomRegions, onZoomAdded]);
 
   // handleAddTrim removed — trim UI replaced by segment split+delete
+
+  const handleAddSpotlight = useCallback(() => {
+    if (!videoDuration || videoDuration === 0 || totalMs === 0 || !onSpotlightAdded) {
+      return;
+    }
+
+    const defaultDuration = Math.min(1000, totalMs);
+    if (defaultDuration <= 0) {
+      return;
+    }
+
+    const sourceTimeMs = displayToSourceTime(videoSegments, currentTimeMs);
+    const startPos = Math.max(0, Math.min(sourceTimeMs, totalMs));
+    const endPos = Math.min(startPos + defaultDuration, totalMs);
+
+    onSpotlightAdded({ start: startPos, end: endPos });
+  }, [videoDuration, totalMs, currentTimeMs, videoSegments, onSpotlightAdded]);
 
   const handleAddAnnotation = useCallback(() => {
     if (!videoDuration || videoDuration === 0 || totalMs === 0 || !onAnnotationAdded) {
@@ -835,13 +1016,16 @@ export default function TimelineEditor({
       }
 
       if (e.key === 'f' || e.key === 'F') {
-        addKeyframe();
+        addKeyframeAtPlayhead();
       }
       if (e.key === 'z' || e.key === 'Z') {
         handleAddZoom();
       }
       if (e.key === 'a' || e.key === 'A') {
         handleAddAnnotation();
+      }
+      if (e.key === 's' || e.key === 'S') {
+        handleAddSpotlight();
       }
 
       // Tab: Cycle through overlapping annotations at current time
@@ -868,12 +1052,14 @@ export default function TimelineEditor({
       }
       // Delete key or Ctrl+D / Cmd+D
       if (e.key === 'Delete' || e.key === 'Backspace' || ((e.key === 'd' || e.key === 'D') && (e.ctrlKey || e.metaKey))) {
-        if (selectedKeyframeId) {
+        if (selectedKeyframeTime !== null) {
           deleteSelectedKeyframe();
         } else if (selectedZoomId) {
           deleteSelectedZoom();
         } else if (selectedTrimId) {
           deleteSelectedTrim();
+        } else if (selectedSpotlightId) {
+          deleteSelectedSpotlight();
         } else if (selectedAnnotationId) {
           deleteSelectedAnnotation();
         }
@@ -881,7 +1067,7 @@ export default function TimelineEditor({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [addKeyframe, handleAddZoom, handleAddAnnotation, deleteSelectedKeyframe, deleteSelectedZoom, deleteSelectedTrim, deleteSelectedAnnotation, selectedKeyframeId, selectedZoomId, selectedTrimId, selectedAnnotationId, annotationRegions, currentTime, onSelectAnnotation]);
+  }, [addKeyframeAtPlayhead, handleAddZoom, handleAddAnnotation, handleAddSpotlight, deleteSelectedKeyframe, deleteSelectedZoom, deleteSelectedTrim, deleteSelectedSpotlight, deleteSelectedAnnotation, selectedKeyframeTime, selectedZoomId, selectedTrimId, selectedSpotlightId, selectedAnnotationId, annotationRegions, currentTime, onSelectAnnotation]);
 
   const clampedRange = useMemo<Range>(() => {
     if (effectiveTotalMs === 0) {
@@ -944,8 +1130,19 @@ export default function TimelineEditor({
       };
     });
 
-    return [...zooms, ...trims, ...annotations];
-  }, [zoomRegions, trimRegions, annotationRegions, videoSegments]);
+    const spotlights: TimelineRenderItem[] = spotlightRegions.map((region, index) => ({
+      id: region.id,
+      rowId: SPOTLIGHT_ROW_ID,
+      span: {
+        start: sourceToDisplayTime(videoSegments, region.startMs),
+        end: sourceToDisplayTime(videoSegments, region.endMs),
+      },
+      label: `Spotlight ${index + 1}`,
+      variant: 'spotlight',
+    }));
+
+    return [...zooms, ...trims, ...annotations, ...spotlights];
+  }, [zoomRegions, trimRegions, annotationRegions, spotlightRegions, videoSegments]);
 
   const handleItemSpanChange = useCallback((id: string, span: Span) => {
     // Check which row the item belongs to
@@ -968,6 +1165,12 @@ export default function TimelineEditor({
         end: displayToSourceTime(videoSegments, span.end),
       };
       onAnnotationSpanChange?.(id, sourceSpan);
+    } else if (spotlightRegions.some(r => r.id === id)) {
+      const sourceSpan = {
+        start: displayToSourceTime(videoSegments, span.start),
+        end: displayToSourceTime(videoSegments, span.end),
+      };
+      onSpotlightSpanChange?.(id, sourceSpan);
     } else if (videoSegments.some(s => s.id === id)) {
       // For video segments, span change = trim resize (already in display time = timelineStartMs coords)
       const seg = videoSegments.find(s => s.id === id);
@@ -987,7 +1190,7 @@ export default function TimelineEditor({
         }
       }
     }
-  }, [zoomRegions, trimRegions, annotationRegions, videoSegments, onZoomSpanChange, onTrimSpanChange, onAnnotationSpanChange, onSegmentSpanChange]);
+  }, [zoomRegions, trimRegions, annotationRegions, spotlightRegions, videoSegments, onZoomSpanChange, onTrimSpanChange, onAnnotationSpanChange, onSpotlightSpanChange, onSegmentSpanChange]);
 
   if (!videoDuration || videoDuration === 0) {
     return (
@@ -1054,6 +1257,24 @@ export default function TimelineEditor({
           >
             <MessageSquare className="w-4 h-4" />
           </Button>
+          <Button
+            onClick={handleAddSpotlight}
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-purple-400 hover:bg-purple-500/10 transition-all"
+            title="Add Spotlight (S)"
+          >
+            <Lightbulb className="w-4 h-4" />
+          </Button>
+          {onAutoSpotlightApply && (
+            <AutoSpotlightPopover
+              cursorData={cursorData}
+              spotlightRegions={spotlightRegions}
+              onApply={onAutoSpotlightApply}
+              nextSpotlightId={nextSpotlightId}
+              disabled={cursorData.length === 0}
+            />
+          )}
           {onAutoZoomApply && (
             <AutoZoomPopover
               cursorData={cursorData}
@@ -1106,8 +1327,8 @@ export default function TimelineEditor({
       </div>
       <div
         ref={timelineContainerRef}
-        className="flex-1 overflow-hidden bg-background relative"
-        onClick={() => setSelectedKeyframeId(null)}
+        className="flex-1 overflow-y-auto overflow-x-hidden bg-background relative"
+        onClick={() => { setSelectedKeyframeTime(null); setSelectedKeyframeSegmentId(null); }}
       >
         <TimelineWrapper
           range={clampedRange}
@@ -1119,14 +1340,6 @@ export default function TimelineEditor({
           gridSizeMs={timelineScale.gridMs}
           onItemSpanChange={handleItemSpanChange}
         >
-          <KeyframeMarkers
-            keyframes={keyframes}
-            selectedKeyframeId={selectedKeyframeId}
-            setSelectedKeyframeId={setSelectedKeyframeId}
-            onKeyframeMove={handleKeyframeMove}
-            videoDurationMs={effectiveTotalMs}
-            timelineRef={timelineContainerRef}
-          />
           <Timeline
             items={timelineItems}
             videoDurationMs={effectiveTotalMs}
@@ -1136,17 +1349,66 @@ export default function TimelineEditor({
             onSelectZoom={onSelectZoom}
             onSelectTrim={onSelectTrim}
             onSelectAnnotation={onSelectAnnotation}
+            onSelectSpotlight={onSelectSpotlight}
             onSelectSegment={onSelectSegment}
             selectedZoomId={selectedZoomId}
             selectedTrimId={selectedTrimId}
             selectedAnnotationId={selectedAnnotationId}
+            selectedSpotlightId={selectedSpotlightId}
             selectedSegmentId={selectedSegmentId}
-            keyframes={keyframes}
             videoSegments={videoSegments}
             razorToolActive={razorToolActive}
             onSplitSegment={onSplitSegment}
             thumbnails={thumbnails}
-          />
+            collapsedTracks={collapsedTracks}
+            onToggleTrack={toggleTrack}
+            timelineContentRef={timelineContentRef}
+            videoKeyframeOverlays={videoSegments.map(segment => (
+              <KeyframeTrack
+                key={`kf-manual-${segment.id}`}
+                segment={segment}
+                filter="manual"
+                selectedKeyframeTime={selectedKeyframeSegmentId === segment.id ? selectedKeyframeTime : null}
+                onSelectKeyframeTime={(timeMs) => handleSelectKeyframeTime(segment.id, timeMs)}
+                onDeleteKeyframesAtTime={onDeleteKeyframesAtTime}
+                onMoveKeyframesAtTime={onMoveKeyframesAtTime}
+                onSeek={onSeek}
+                videoDurationMs={effectiveTotalMs}
+                timelineRef={timelineContentRef}
+              />
+            ))}
+            spotlightKeyframeOverlays={
+              spotlightRegions.some(s => s.keyframes && s.keyframes.length > 0) ? (
+                <KeyframeTrack
+                  key="kf-spotlight"
+                  segment={videoSegments[0] || { id: 'dummy', sourceStartMs: 0, sourceEndMs: effectiveTotalMs, timelineStartMs: 0, transform: {} as any, keyframes: [] }}
+                  filter="spotlight"
+                  spotlightRegions={spotlightRegions}
+                  videoSegments={videoSegments}
+                  selectedKeyframeTime={null}
+                  onSelectKeyframeTime={() => {}}
+                  onSeek={onSeek}
+                  videoDurationMs={effectiveTotalMs}
+                  timelineRef={timelineContentRef}
+                />
+              ) : undefined
+            }
+          >
+            {videoSegments.map(segment => (
+              <KeyframeTrack
+                key={`kf-zoom-${segment.id}`}
+                segment={segment}
+                filter="zoom"
+                selectedKeyframeTime={selectedKeyframeSegmentId === segment.id ? selectedKeyframeTime : null}
+                onSelectKeyframeTime={(timeMs) => handleSelectKeyframeTime(segment.id, timeMs)}
+                onDeleteKeyframesAtTime={onDeleteKeyframesAtTime}
+                onMoveKeyframesAtTime={onMoveKeyframesAtTime}
+                onSeek={onSeek}
+                videoDurationMs={effectiveTotalMs}
+                timelineRef={timelineContentRef}
+              />
+            ))}
+          </Timeline>
         </TimelineWrapper>
       </div>
     </div>

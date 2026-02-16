@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { getAssetPath } from "@/lib/assetPath";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
@@ -7,21 +7,20 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import Block from '@uiw/react-color-block';
-import { Trash2, Download, Crop, X, Upload, Film, Image, Sparkles, Palette, MousePointer2, RotateCw, Move, Link, Unlink } from "lucide-react";
+import { Trash2, Download, Crop, X, Upload, Film, Image, Sparkles, Palette, MousePointer2, RotateCw, Move, Link, Unlink, Diamond, Pause } from "lucide-react";
 import { toast } from "sonner";
-import type { ZoomDepth, CropRegion, AnnotationRegion, AnnotationType, VideoSegment, SegmentTransform } from "./types";
+import type { ZoomDepth, CropRegion, AnnotationRegion, AnnotationType, VideoSegment, SegmentTransform, SpotlightRegion, TransformProperty } from "./types";
 import { CropControl } from "./CropControl";
 import { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
 import { AnnotationSettingsPanel } from "./AnnotationSettingsPanel";
+import { SpotlightSettingsPanel } from "./SpotlightSettingsPanel";
 import { type AspectRatio } from "@/utils/aspectRatioUtils";
 import type { ExportQuality, ExportFormat, GifFrameRate, GifSizePreset } from "@/lib/exporter";
 import { GIF_FRAME_RATES, GIF_SIZE_PRESETS } from "@/lib/exporter";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { CursorHighlightSettings } from "./CursorHighlightSettings";
 import type { CursorHighlightConfig } from "@/lib/cursorTracker";
-import { TransitionSettingsPanel } from "./TransitionSettingsPanel";
-import type { TransitionConfig, ZoomRegion } from "./types";
-import { DEFAULT_TRANSITION_CONFIG } from "./types";
+import { resolveTransformAtTime, propertiesWithKeyframes, findNearestKeyframeTime } from "@/lib/keyframeInterpolation";
 
 const WALLPAPER_COUNT = 18;
 const WALLPAPER_RELATIVE = Array.from({ length: WALLPAPER_COUNT }, (_, i) => `wallpapers/wallpaper${i + 1}.jpg`);
@@ -58,6 +57,9 @@ interface SettingsPanelProps {
   selectedZoomDepth?: ZoomDepth | null;
   onZoomDepthChange?: (depth: ZoomDepth) => void;
   selectedZoomId?: string | null;
+  zoomEnterTransitionMs?: number;
+  zoomExitTransitionMs?: number;
+  onZoomTransitionChange?: (enterMs: number, exitMs: number) => void;
   onZoomDelete?: (id: string) => void;
   selectedTrimId?: string | null;
   onTrimDelete?: (id: string) => void;
@@ -98,13 +100,27 @@ interface SettingsPanelProps {
   cursorHighlight?: CursorHighlightConfig;
   onCursorHighlightChange?: (config: CursorHighlightConfig) => void;
   hasCursorData?: boolean;
-  zoomRegions?: ZoomRegion[];
-  onZoomTransitionChange?: (id: string, enter: TransitionConfig, exit: TransitionConfig) => void;
+  spotlightRegions?: SpotlightRegion[];
+  selectedSpotlightId?: string | null;
+  onSpotlightUpdate?: (id: string, updates: Partial<SpotlightRegion>) => void;
+  onSpotlightDelete?: (id: string) => void;
+  playheadInsideSpotlight?: boolean;
+  activeSpotlightValues?: { x: number; y: number; width: number; height: number } | null;
+  currentSpotlightKeyframeTime?: number | null;
+  onAddSpotlightPoint?: (spotlightId: string) => void;
+  onHoldSpotlightPoint?: (spotlightId: string) => void;
+  onSpotlightPropertyChange?: (property: import('./types').SpotlightAnimProperty, value: number) => void;
   videoSegments?: VideoSegment[];
   selectedSegmentId?: string | null;
-  onSegmentTransformChange?: (segmentId: string, transform: Partial<SegmentTransform>) => void;
+  onSegmentTransformChange?: (segmentId: string, transform: Partial<SegmentTransform>, playheadTimeMs?: number) => void;
   onSegmentTransformReset?: (segmentId: string) => void;
   onSegmentDelete?: (segmentId: string) => void;
+  playheadRelativeTimeMs?: number;
+  activeZoomTransform?: { zoom: number; focusX: number; focusY: number } | null;
+  playheadInsideSelectedZoom?: boolean;
+  onAddZoomPanPoint?: (zoomRegionId: string) => void;
+  onHoldPanPoint?: (zoomRegionId: string) => void;
+  onZoomPropertyChange?: (property: 'zoom' | 'focusX' | 'focusY', value: number) => void;
 }
 
 export default SettingsPanel;
@@ -124,6 +140,9 @@ export function SettingsPanel({
   selectedZoomDepth, 
   onZoomDepthChange, 
   selectedZoomId,
+  zoomEnterTransitionMs = 400,
+  zoomExitTransitionMs = 400,
+  onZoomTransitionChange,
   onZoomDelete,
   selectedTrimId: _selectedTrimId,
   onTrimDelete: _onTrimDelete,
@@ -163,13 +182,27 @@ export function SettingsPanel({
   cursorHighlight,
   onCursorHighlightChange,
   hasCursorData = false,
-  zoomRegions = [],
-  onZoomTransitionChange,
+  spotlightRegions = [],
+  selectedSpotlightId,
+  onSpotlightUpdate,
+  onSpotlightDelete,
+  playheadInsideSpotlight = false,
+  activeSpotlightValues,
+  currentSpotlightKeyframeTime,
+  onAddSpotlightPoint,
+  onHoldSpotlightPoint,
+  onSpotlightPropertyChange,
   videoSegments = [],
   selectedSegmentId,
   onSegmentTransformChange,
   onSegmentTransformReset,
   onSegmentDelete,
+  playheadRelativeTimeMs = 0,
+  activeZoomTransform,
+  playheadInsideSelectedZoom = false,
+  onAddZoomPanPoint,
+  onHoldPanPoint,
+  onZoomPropertyChange,
 }: SettingsPanelProps) {
   const [wallpaperPaths, setWallpaperPaths] = useState<string[]>([]);
   const [customImages, setCustomImages] = useState<string[]>([]);
@@ -197,6 +230,37 @@ export function SettingsPanel({
   const [gradient, setGradient] = useState<string>(GRADIENTS[0]);
   const [showCropDropdown, setShowCropDropdown] = useState(false);
   const [scaleLocked, setScaleLocked] = useState(true);
+
+  // Compute interpolated transform values at playhead time for the selected segment
+  const selectedSegment = videoSegments.find(s => s.id === selectedSegmentId) ?? null;
+  const interpolatedTransform = useMemo(() => {
+    if (!selectedSegment) return null;
+    return resolveTransformAtTime(selectedSegment.keyframes, playheadRelativeTimeMs, selectedSegment.transform);
+  }, [selectedSegment, playheadRelativeTimeMs]);
+
+  // Which properties have keyframes on the selected segment?
+  const kfProps = useMemo(() => {
+    if (!selectedSegment) return new Set<TransformProperty>();
+    return propertiesWithKeyframes(selectedSegment.keyframes);
+  }, [selectedSegment]);
+
+  // Is playhead at a keyframe time?
+  const atKeyframeTime = useMemo(() => {
+    if (!selectedSegment) return false;
+    return findNearestKeyframeTime(selectedSegment.keyframes, playheadRelativeTimeMs) !== null;
+  }, [selectedSegment, playheadRelativeTimeMs]);
+
+  // Use interpolated values when segment has keyframes, otherwise static
+  const displayTransform = interpolatedTransform ?? selectedSegment?.transform ?? null;
+
+  // Helper to call transform change with playhead time when at a keyframe
+  const handleTransformSlider = (segmentId: string, transform: Partial<SegmentTransform>) => {
+    if (atKeyframeTime) {
+      onSegmentTransformChange?.(segmentId, transform, playheadRelativeTimeMs);
+    } else {
+      onSegmentTransformChange?.(segmentId, transform);
+    }
+  };
 
   const zoomEnabled = Boolean(selectedZoomDepth);
 
@@ -253,15 +317,33 @@ export function SettingsPanel({
     }
   };
 
+  // Find selected spotlight
+  const selectedSpotlight = selectedSpotlightId
+    ? spotlightRegions.find(s => s.id === selectedSpotlightId)
+    : null;
+
   // Find selected annotation
-  const selectedAnnotation = selectedAnnotationId 
+  const selectedAnnotation = selectedAnnotationId
     ? annotationRegions.find(a => a.id === selectedAnnotationId)
     : null;
 
-  // Find selected segment
-  const selectedSegment = selectedSegmentId
-    ? videoSegments.find(s => s.id === selectedSegmentId)
-    : null;
+  // If a spotlight is selected, show spotlight settings instead
+  if (selectedSpotlight && onSpotlightUpdate && onSpotlightDelete) {
+    return (
+      <SpotlightSettingsPanel
+        spotlight={selectedSpotlight}
+        onDimOpacityChange={(opacity) => onSpotlightUpdate(selectedSpotlight.id, { dimOpacity: opacity })}
+        onBorderRadiusChange={(radius) => onSpotlightUpdate(selectedSpotlight.id, { borderRadius: radius })}
+        onDelete={() => onSpotlightDelete(selectedSpotlight.id)}
+        playheadInsideSpotlight={playheadInsideSpotlight}
+        activeValues={activeSpotlightValues ?? undefined}
+        currentKeyframeTime={currentSpotlightKeyframeTime ?? undefined}
+        onAddPoint={onAddSpotlightPoint ? () => onAddSpotlightPoint(selectedSpotlight.id) : undefined}
+        onHoldPoint={onHoldSpotlightPoint ? () => onHoldSpotlightPoint(selectedSpotlight.id) : undefined}
+        onPropertyChange={onSpotlightPropertyChange}
+      />
+    );
+  }
 
   // If an annotation is selected, show annotation settings instead
   if (selectedAnnotation && onAnnotationContentChange && onAnnotationTypeChange && onAnnotationStyleChange && onAnnotationDelete) {
@@ -320,6 +402,116 @@ export function SettingsPanel({
           )}
           {zoomEnabled && (
             <>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-[10px] font-medium text-foreground/80">Zoom In</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{zoomEnterTransitionMs}ms</span>
+                  </div>
+                  <Slider
+                    value={[zoomEnterTransitionMs]}
+                    onValueChange={(values) => onZoomTransitionChange?.(values[0], zoomExitTransitionMs)}
+                    min={50}
+                    max={1000}
+                    step={50}
+                    className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                  />
+                </div>
+                <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-[10px] font-medium text-foreground/80">Zoom Out</div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{zoomExitTransitionMs}ms</span>
+                  </div>
+                  <Slider
+                    value={[zoomExitTransitionMs]}
+                    onValueChange={(values) => onZoomTransitionChange?.(zoomEnterTransitionMs, values[0])}
+                    min={50}
+                    max={1000}
+                    step={50}
+                    className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                  />
+                </div>
+              </div>
+
+              {/* Zoom Pan Point & Property Sliders */}
+              {playheadInsideSelectedZoom && selectedZoomId && (
+                <div className="mt-2 space-y-2">
+                  <div className="flex gap-2">
+                    {onAddZoomPanPoint && (
+                      <Button
+                        onClick={() => onAddZoomPanPoint(selectedZoomId)}
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 gap-1.5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-500/50 transition-all h-8 text-xs"
+                      >
+                        <Diamond className="w-3 h-3" />
+                        Pan Point
+                      </Button>
+                    )}
+                    {onHoldPanPoint && (
+                      <Button
+                        onClick={() => onHoldPanPoint(selectedZoomId)}
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 gap-1.5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-500/50 transition-all h-8 text-xs"
+                      >
+                        <Pause className="w-3 h-3" />
+                        Hold Here
+                      </Button>
+                    )}
+                  </div>
+
+                  {activeZoomTransform && (
+                    <div className="space-y-2">
+                      <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-[10px] font-medium text-foreground/80">Zoom Level</div>
+                          <span className="text-[10px] text-muted-foreground font-mono">{activeZoomTransform.zoom.toFixed(2)}x</span>
+                        </div>
+                        <Slider
+                          value={[activeZoomTransform.zoom]}
+                          onValueChange={(values) => onZoomPropertyChange?.('zoom', values[0])}
+                          min={1.0}
+                          max={5.0}
+                          step={0.05}
+                          className="w-full [&_[role=slider]]:bg-cyan-400 [&_[role=slider]]:border-cyan-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="text-[10px] font-medium text-foreground/80">Focus X</div>
+                            <span className="text-[10px] text-muted-foreground font-mono">{Math.round(activeZoomTransform.focusX * 100)}%</span>
+                          </div>
+                          <Slider
+                            value={[activeZoomTransform.focusX]}
+                            onValueChange={(values) => onZoomPropertyChange?.('focusX', values[0])}
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            className="w-full [&_[role=slider]]:bg-cyan-400 [&_[role=slider]]:border-cyan-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                          />
+                        </div>
+                        <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="text-[10px] font-medium text-foreground/80">Focus Y</div>
+                            <span className="text-[10px] text-muted-foreground font-mono">{Math.round(activeZoomTransform.focusY * 100)}%</span>
+                          </div>
+                          <Slider
+                            value={[activeZoomTransform.focusY]}
+                            onValueChange={(values) => onZoomPropertyChange?.('focusY', values[0])}
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            className="w-full [&_[role=slider]]:bg-cyan-400 [&_[role=slider]]:border-cyan-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <Button
                 onClick={handleDeleteClick}
                 variant="destructive"
@@ -329,45 +521,41 @@ export function SettingsPanel({
                 <Trash2 className="w-3 h-3" />
                 Delete Zoom
               </Button>
-              {selectedZoomId && onZoomTransitionChange && (() => {
-                const region = zoomRegions.find(z => z.id === selectedZoomId);
-                if (!region) return null;
-                return (
-                  <div className="mt-3 p-2 rounded-lg bg-secondary border border-border/30">
-                    <TransitionSettingsPanel
-                      enterTransition={region.enterTransition || { ...DEFAULT_TRANSITION_CONFIG }}
-                      exitTransition={region.exitTransition || { ...DEFAULT_TRANSITION_CONFIG }}
-                      onEnterChange={(config) => onZoomTransitionChange(selectedZoomId, config, region.exitTransition || { ...DEFAULT_TRANSITION_CONFIG })}
-                      onExitChange={(config) => onZoomTransitionChange(selectedZoomId, region.enterTransition || { ...DEFAULT_TRANSITION_CONFIG }, config)}
-                    />
-                  </div>
-                );
-              })()}
             </>
           )}
         </div>
 
-        {selectedSegment && onSegmentTransformChange && (
+        {selectedSegment && displayTransform && onSegmentTransformChange && (
           <div className="mb-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <RotateCw className="w-4 h-4 text-blue-400" />
                 <span className="text-sm font-sans text-foreground">Transform</span>
               </div>
-              <span className="text-[10px] uppercase tracking-wider font-medium text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded-full">
-                Segment
-              </span>
+              <div className="flex items-center gap-1.5">
+                {displayTransform.zoom > 1.01 && (
+                  <span className="text-[10px] font-medium text-cyan-400 bg-cyan-400/10 px-2 py-0.5 rounded-full">
+                    {displayTransform.zoom.toFixed(1)}x zoom
+                  </span>
+                )}
+                <span className="text-[10px] uppercase tracking-wider font-medium text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded-full">
+                  Segment
+                </span>
+              </div>
             </div>
 
             <div className="space-y-2">
               <div className="p-2 rounded-lg bg-secondary border border-border/30">
                 <div className="flex items-center justify-between mb-1">
-                  <div className="text-[10px] font-medium text-foreground/80">Rotation</div>
-                  <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.rotation.toFixed(0)}&deg;</span>
+                  <div className="flex items-center gap-1">
+                    <div className="text-[10px] font-medium text-foreground/80">Rotation</div>
+                    {kfProps.has('rotation') && <Diamond className="w-2.5 h-2.5 text-yellow-400 fill-yellow-400" />}
+                  </div>
+                  <span className="text-[10px] text-muted-foreground font-mono">{displayTransform.rotation.toFixed(0)}&deg;</span>
                 </div>
                 <Slider
-                  value={[selectedSegment.transform.rotation]}
-                  onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { rotation: values[0] })}
+                  value={[displayTransform.rotation]}
+                  onValueChange={(values) => handleTransformSlider(selectedSegment.id, { rotation: values[0] })}
                   min={-180}
                   max={180}
                   step={1}
@@ -380,6 +568,7 @@ export function SettingsPanel({
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-1.5">
                       <div className="text-[10px] font-medium text-foreground/80">Scale</div>
+                      {(kfProps.has('scaleX') || kfProps.has('scaleY')) && <Diamond className="w-2.5 h-2.5 text-yellow-400 fill-yellow-400" />}
                       <button
                         type="button"
                         onClick={() => setScaleLocked(false)}
@@ -389,11 +578,11 @@ export function SettingsPanel({
                         <Link className="w-3 h-3" />
                       </button>
                     </div>
-                    <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.scaleX.toFixed(2)}</span>
+                    <span className="text-[10px] text-muted-foreground font-mono">{displayTransform.scaleX.toFixed(2)}</span>
                   </div>
                   <Slider
-                    value={[selectedSegment.transform.scaleX]}
-                    onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { scaleX: values[0], scaleY: values[0] })}
+                    value={[displayTransform.scaleX]}
+                    onValueChange={(values) => handleTransformSlider(selectedSegment.id, { scaleX: values[0], scaleY: values[0] })}
                     min={0.1}
                     max={3}
                     step={0.01}
@@ -406,6 +595,7 @@ export function SettingsPanel({
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-1.5">
                         <div className="text-[10px] font-medium text-foreground/80">Scale X</div>
+                        {kfProps.has('scaleX') && <Diamond className="w-2.5 h-2.5 text-yellow-400 fill-yellow-400" />}
                         <button
                           type="button"
                           onClick={() => setScaleLocked(true)}
@@ -415,11 +605,11 @@ export function SettingsPanel({
                           <Unlink className="w-3 h-3" />
                         </button>
                       </div>
-                      <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.scaleX.toFixed(2)}</span>
+                      <span className="text-[10px] text-muted-foreground font-mono">{displayTransform.scaleX.toFixed(2)}</span>
                     </div>
                     <Slider
-                      value={[selectedSegment.transform.scaleX]}
-                      onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { scaleX: values[0] })}
+                      value={[displayTransform.scaleX]}
+                      onValueChange={(values) => handleTransformSlider(selectedSegment.id, { scaleX: values[0] })}
                       min={0.1}
                       max={3}
                       step={0.01}
@@ -428,12 +618,15 @@ export function SettingsPanel({
                   </div>
                   <div className="p-2 rounded-lg bg-secondary border border-border/30">
                     <div className="flex items-center justify-between mb-1">
-                      <div className="text-[10px] font-medium text-foreground/80">Scale Y</div>
-                      <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.scaleY.toFixed(2)}</span>
+                      <div className="flex items-center gap-1">
+                        <div className="text-[10px] font-medium text-foreground/80">Scale Y</div>
+                        {kfProps.has('scaleY') && <Diamond className="w-2.5 h-2.5 text-yellow-400 fill-yellow-400" />}
+                      </div>
+                      <span className="text-[10px] text-muted-foreground font-mono">{displayTransform.scaleY.toFixed(2)}</span>
                     </div>
                     <Slider
-                      value={[selectedSegment.transform.scaleY]}
-                      onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { scaleY: values[0] })}
+                      value={[displayTransform.scaleY]}
+                      onValueChange={(values) => handleTransformSlider(selectedSegment.id, { scaleY: values[0] })}
                       min={0.1}
                       max={3}
                       step={0.01}
@@ -446,12 +639,15 @@ export function SettingsPanel({
               <div className="grid grid-cols-2 gap-2">
                 <div className="p-2 rounded-lg bg-secondary border border-border/30">
                   <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] font-medium text-foreground/80">Position X</div>
-                    <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.positionX.toFixed(0)}px</span>
+                    <div className="flex items-center gap-1">
+                      <div className="text-[10px] font-medium text-foreground/80">Position X</div>
+                      {kfProps.has('positionX') && <Diamond className="w-2.5 h-2.5 text-yellow-400 fill-yellow-400" />}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{displayTransform.positionX.toFixed(0)}px</span>
                   </div>
                   <Slider
-                    value={[selectedSegment.transform.positionX]}
-                    onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { positionX: values[0] })}
+                    value={[displayTransform.positionX]}
+                    onValueChange={(values) => handleTransformSlider(selectedSegment.id, { positionX: values[0] })}
                     min={-500}
                     max={500}
                     step={1}
@@ -460,12 +656,15 @@ export function SettingsPanel({
                 </div>
                 <div className="p-2 rounded-lg bg-secondary border border-border/30">
                   <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] font-medium text-foreground/80">Position Y</div>
-                    <span className="text-[10px] text-muted-foreground font-mono">{selectedSegment.transform.positionY.toFixed(0)}px</span>
+                    <div className="flex items-center gap-1">
+                      <div className="text-[10px] font-medium text-foreground/80">Position Y</div>
+                      {kfProps.has('positionY') && <Diamond className="w-2.5 h-2.5 text-yellow-400 fill-yellow-400" />}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground font-mono">{displayTransform.positionY.toFixed(0)}px</span>
                   </div>
                   <Slider
-                    value={[selectedSegment.transform.positionY]}
-                    onValueChange={(values) => onSegmentTransformChange(selectedSegment.id, { positionY: values[0] })}
+                    value={[displayTransform.positionY]}
+                    onValueChange={(values) => handleTransformSlider(selectedSegment.id, { positionY: values[0] })}
                     min={-500}
                     max={500}
                     step={1}

@@ -1,20 +1,19 @@
 import { Application, Container, Sprite, Graphics, BlurFilter, Texture } from 'pixi.js';
-import type { ZoomRegion, CropRegion, AnnotationRegion } from '@/components/video-editor/types';
-import { ZOOM_DEPTH_SCALES } from '@/components/video-editor/types';
-import { findDominantRegion } from '@/components/video-editor/videoPlayback/zoomRegionUtils';
+import type { CropRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
+import { getSpotlightFadeOpacity } from '@/components/video-editor/types';
 import { applyZoomTransform } from '@/components/video-editor/videoPlayback/zoomTransform';
-import { DEFAULT_FOCUS, SMOOTHING_FACTOR, MIN_DELTA } from '@/components/video-editor/videoPlayback/constants';
-import { clampFocusToStage as clampFocusToStageUtil } from '@/components/video-editor/videoPlayback/focusUtils';
+import { DEFAULT_FOCUS } from '@/components/video-editor/videoPlayback/constants';
+import { resolveTransformAtTime, resolveSpotlightAtTime } from '@/lib/keyframeInterpolation';
+import { findSegmentAtSourceTime } from '@/lib/segmentUtils';
 import { renderAnnotations } from './annotationRenderer';
 import { renderCursorHighlight } from './cursorHighlightExportRenderer';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
-import { computeTransitionState } from '@/components/video-editor/videoPlayback/transitionEngine';
 
 interface FrameRenderConfig {
   width: number;
   height: number;
   wallpaper: string;
-  zoomRegions: ZoomRegion[];
+  videoSegments?: VideoSegment[];
   showShadow: boolean;
   shadowIntensity: number;
   showBlur: boolean;
@@ -25,6 +24,7 @@ interface FrameRenderConfig {
   videoWidth: number;
   videoHeight: number;
   annotationRegions?: AnnotationRegion[];
+  spotlightRegions?: SpotlightRegion[];
   previewWidth?: number;
   previewHeight?: number;
   cursorData?: CursorFrame[];
@@ -279,21 +279,22 @@ export class FrameRenderer {
     this.updateLayout();
 
     const timeMs = this.currentVideoTime * 1000;
-    const TICKS_PER_FRAME = 1;
-    
-    let maxMotionIntensity = 0;
-    for (let i = 0; i < TICKS_PER_FRAME; i++) {
-      const motionIntensity = this.updateAnimationState(timeMs);
-      maxMotionIntensity = Math.max(maxMotionIntensity, motionIntensity);
-    }
-    
-    // Compute transition state for the dominant region
-    const { region: dominantRegion } = findDominantRegion(this.config.zoomRegions, timeMs);
-    const transitionState = dominantRegion
-      ? computeTransitionState(dominantRegion, timeMs)
-      : undefined;
+    const motionIntensity = this.updateAnimationState(timeMs);
 
-    // Apply transform once with maximum motion intensity from all ticks
+    // Resolve segment transform for additional rotation/scale/position
+    let segmentTransform: import('@/components/video-editor/types').SegmentTransform | undefined;
+    const segments = this.config.videoSegments;
+    if (segments && segments.length > 0) {
+      const seg = findSegmentAtSourceTime(segments, timeMs);
+      if (seg) {
+        const relativeTime = timeMs - seg.sourceStartMs;
+        const resolved = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
+        if (resolved.rotation !== 0 || resolved.scaleX !== 1 || resolved.scaleY !== 1 || resolved.positionX !== 0 || resolved.positionY !== 0) {
+          segmentTransform = resolved;
+        }
+      }
+    }
+
     applyZoomTransform({
       cameraContainer: this.cameraContainer,
       blurFilter: this.blurFilter,
@@ -302,10 +303,10 @@ export class FrameRenderer {
       zoomScale: this.animationState.scale,
       focusX: this.animationState.focusX,
       focusY: this.animationState.focusY,
-      motionIntensity: maxMotionIntensity,
+      motionIntensity,
       isPlaying: true,
       motionBlurEnabled: this.config.motionBlurEnabled ?? false,
-      transitionState,
+      segmentTransform,
     });
 
     // Render the PixiJS stage to its canvas (video only, transparent background)
@@ -313,6 +314,51 @@ export class FrameRenderer {
 
     // Composite with shadows to final output canvas
     this.compositeWithShadows();
+
+    // Render spotlight dim overlay with fade-in/out
+    if (this.config.spotlightRegions && this.config.spotlightRegions.length > 0 && this.compositeCtx) {
+      const ctx = this.compositeCtx;
+      const w = this.config.width;
+      const h = this.config.height;
+      for (const spot of this.config.spotlightRegions) {
+        const opacity = getSpotlightFadeOpacity(spot, timeMs);
+        if (opacity <= 0) continue;
+
+        // Resolve animated values when keyframes exist
+        const relTime = timeMs - spot.startMs;
+        const resolved = spot.keyframes?.length
+          ? resolveSpotlightAtTime(spot.keyframes, relTime, spot)
+          : spot;
+        const sx = (resolved.x / 100) * w;
+        const sy = (resolved.y / 100) * h;
+        const sw = (resolved.width / 100) * w;
+        const sh = (resolved.height / 100) * h;
+        const br = spot.borderRadius;
+
+        ctx.save();
+        // Draw dim overlay with cutout using even-odd fill
+        ctx.beginPath();
+        // Outer rect (clockwise)
+        ctx.rect(0, 0, w, h);
+        // Inner rect (counter-clockwise) with rounded corners
+        if (br > 0) {
+          ctx.moveTo(sx + br, sy);
+          ctx.lineTo(sx + sw - br, sy);
+          ctx.arcTo(sx + sw, sy, sx + sw, sy + br, br);
+          ctx.lineTo(sx + sw, sy + sh - br);
+          ctx.arcTo(sx + sw, sy + sh, sx + sw - br, sy + sh, br);
+          ctx.lineTo(sx + br, sy + sh);
+          ctx.arcTo(sx, sy + sh, sx, sy + sh - br, br);
+          ctx.lineTo(sx, sy + br);
+          ctx.arcTo(sx, sy, sx + br, sy, br);
+        } else {
+          ctx.rect(sx, sy, sw, sh);
+        }
+        ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+        ctx.fill('evenodd');
+        ctx.restore();
+      }
+    }
 
     // Render annotations on top if present
     if (this.config.annotationRegions && this.config.annotationRegions.length > 0 && this.compositeCtx) {
@@ -416,71 +462,39 @@ export class FrameRenderer {
     };
   }
 
-  private clampFocusToStage(focus: { cx: number; cy: number }, depth: number): { cx: number; cy: number } {
-    if (!this.layoutCache) return focus;
-    return clampFocusToStageUtil(focus, depth as any, this.layoutCache);
-  }
-
   private updateAnimationState(timeMs: number): number {
     if (!this.cameraContainer || !this.layoutCache) return 0;
 
-    const { region, strength } = findDominantRegion(this.config.zoomRegions, timeMs);
-    
-    const defaultFocus = DEFAULT_FOCUS;
-    let targetScaleFactor = 1;
-    let targetFocus = { ...defaultFocus };
-
-    if (region && strength > 0) {
-      const zoomScale = ZOOM_DEPTH_SCALES[region.depth];
-      const regionFocus = this.clampFocusToStage(region.focus, region.depth);
-      
-      targetScaleFactor = 1 + (zoomScale - 1) * strength;
-      targetFocus = {
-        cx: defaultFocus.cx + (regionFocus.cx - defaultFocus.cx) * strength,
-        cy: defaultFocus.cy + (regionFocus.cy - defaultFocus.cy) * strength,
-      };
-    }
-
     const state = this.animationState;
-
     const prevScale = state.scale;
     const prevFocusX = state.focusX;
     const prevFocusY = state.focusY;
 
-    const scaleDelta = targetScaleFactor - state.scale;
-    const focusXDelta = targetFocus.cx - state.focusX;
-    const focusYDelta = targetFocus.cy - state.focusY;
+    // Resolve zoom from segment keyframes
+    let zoomScale = 1;
+    let focusXVal = DEFAULT_FOCUS.cx;
+    let focusYVal = DEFAULT_FOCUS.cy;
 
-    let nextScale = prevScale;
-    let nextFocusX = prevFocusX;
-    let nextFocusY = prevFocusY;
-
-    if (Math.abs(scaleDelta) > MIN_DELTA) {
-      nextScale = prevScale + scaleDelta * SMOOTHING_FACTOR;
-    } else {
-      nextScale = targetScaleFactor;
+    const segments = this.config.videoSegments;
+    if (segments && segments.length > 0) {
+      const seg = findSegmentAtSourceTime(segments, timeMs);
+      if (seg) {
+        const relativeTime = timeMs - seg.sourceStartMs;
+        const resolved = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
+        zoomScale = resolved.zoom;
+        focusXVal = resolved.focusX;
+        focusYVal = resolved.focusY;
+      }
     }
 
-    if (Math.abs(focusXDelta) > MIN_DELTA) {
-      nextFocusX = prevFocusX + focusXDelta * SMOOTHING_FACTOR;
-    } else {
-      nextFocusX = targetFocus.cx;
-    }
-
-    if (Math.abs(focusYDelta) > MIN_DELTA) {
-      nextFocusY = prevFocusY + focusYDelta * SMOOTHING_FACTOR;
-    } else {
-      nextFocusY = targetFocus.cy;
-    }
-
-    state.scale = nextScale;
-    state.focusX = nextFocusX;
-    state.focusY = nextFocusY;
+    state.scale = zoomScale;
+    state.focusX = focusXVal;
+    state.focusY = focusYVal;
 
     return Math.max(
-      Math.abs(nextScale - prevScale),
-      Math.abs(nextFocusX - prevFocusX),
-      Math.abs(nextFocusY - prevFocusY)
+      Math.abs(state.scale - prevScale),
+      Math.abs(state.focusX - prevFocusX),
+      Math.abs(state.focusY - prevFocusY)
     );
   }
 

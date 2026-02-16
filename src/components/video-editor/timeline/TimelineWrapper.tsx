@@ -1,7 +1,49 @@
-import { useCallback } from "react";
+import { useCallback, useLayoutEffect } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { TimelineContext } from "dnd-timeline";
-import type { DragEndEvent, Range, ResizeEndEvent, Span } from "dnd-timeline";
+import type { DragEndEvent, Range, ResizeEndEvent, Span, UsePanStrategy } from "dnd-timeline";
+
+/**
+ * Custom pan strategy: plain two-finger trackpad scroll pans horizontally,
+ * Ctrl/Cmd + scroll zooms (standard dnd-timeline behavior).
+ */
+const useTrackpadPanStrategy: UsePanStrategy = (timelineBag, onPanEnd) => {
+  useLayoutEffect(() => {
+    const element = timelineBag.timelineRef.current;
+    if (!element) return;
+
+    const handler = (event: WheelEvent) => {
+      const isZoom = event.ctrlKey || event.metaKey;
+
+      if (isZoom) {
+        // Ctrl/Cmd + scroll → zoom (deltaY controls zoom, Shift swaps axis)
+        event.preventDefault();
+        const isHorizontal = event.shiftKey;
+        onPanEnd({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          deltaX: isHorizontal ? event.deltaX || event.deltaY : 0,
+          deltaY: isHorizontal ? 0 : event.deltaY,
+        });
+      } else if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+        // Horizontal-dominant scroll → pan timeline left/right
+        event.preventDefault();
+        onPanEnd({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          deltaX: event.deltaX,
+          deltaY: 0,
+        });
+      }
+      // Vertical-dominant scroll without Ctrl: let the page scroll normally
+    };
+
+    element.addEventListener("wheel", handler, { passive: false });
+    return () => {
+      element.removeEventListener("wheel", handler);
+    };
+  }, [onPanEnd, timelineBag.timelineRef]);
+};
 
 interface TimelineWrapperProps {
   children: ReactNode;
@@ -155,6 +197,7 @@ export default function TimelineWrapper({
       onRangeChanged={handleRangeChange}
       onResizeEnd={onResizeEnd}
       onDragEnd={onDragEnd}
+      usePanStrategy={useTrackpadPanStrategy}
       autoScroll={{ enabled: false }}
     >
       {children}

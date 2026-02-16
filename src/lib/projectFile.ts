@@ -1,5 +1,6 @@
 import type { EditorUndoableState } from "@/components/video-editor/editorState";
 import type { ExportQuality, ExportFormat, GifFrameRate, GifSizePreset } from "@/lib/exporter";
+import { zoomRegionToKeyframes } from "@/lib/zoomKeyframeGenerator";
 
 const PROJECT_VERSION = 1;
 const FILE_EXTENSION = '.lumirec';
@@ -62,7 +63,46 @@ export function deserializeProject(json: string): ProjectFileData {
     throw new Error('Project file is missing editor state');
   }
 
+  // Migrate: convert legacy zoom regions to keyframes on segments
+  migrateZoomRegionsToKeyframes(data.editorState);
+
   return data;
+}
+
+/**
+ * Migrate legacy zoom regions into keyframes on the appropriate segments.
+ * Only runs when segments exist but have no zoom keyframes, and zoom regions are present.
+ */
+function migrateZoomRegionsToKeyframes(state: EditorUndoableState): void {
+  const { zoomRegions, videoSegments } = state;
+  if (!zoomRegions?.length || !videoSegments?.length) return;
+
+  // Check if any segment already has zoom keyframes (already migrated)
+  const hasZoomKeyframes = videoSegments.some(seg =>
+    seg.keyframes?.some(kf => kf.property === 'zoom')
+  );
+  if (hasZoomKeyframes) return;
+
+  // For each zoom region, find the containing segment and add keyframes
+  for (const region of zoomRegions) {
+    const seg = videoSegments.find(s =>
+      region.startMs >= s.timelineStartMs &&
+      region.startMs < s.timelineStartMs + (s.sourceEndMs - s.sourceStartMs)
+    );
+    if (!seg) continue;
+
+    const keyframes = zoomRegionToKeyframes(
+      region.startMs,
+      region.endMs,
+      region.depth,
+      region.focus.cx,
+      region.focus.cy,
+      seg.timelineStartMs,
+    );
+
+    if (!seg.keyframes) seg.keyframes = [];
+    seg.keyframes.push(...keyframes);
+  }
 }
 
 export { FILE_EXTENSION, PROJECT_VERSION };

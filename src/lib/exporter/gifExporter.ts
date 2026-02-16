@@ -2,7 +2,7 @@ import GIF from 'gif.js';
 import type { ExportProgress, ExportResult, GifFrameRate, GifSizePreset, GIF_SIZE_PRESETS } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
-import type { ZoomRegion, CropRegion, TrimRegion, AnnotationRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 import { computeGapRegions } from '@/lib/segmentUtils';
 
@@ -16,7 +16,6 @@ interface GifExporterConfig {
   loop: boolean;
   sizePreset: GifSizePreset;
   wallpaper: string;
-  zoomRegions: ZoomRegion[];
   trimRegions?: TrimRegion[];
   showShadow: boolean;
   shadowIntensity: number;
@@ -27,6 +26,7 @@ interface GifExporterConfig {
   videoPadding?: number;
   cropRegion: CropRegion;
   annotationRegions?: AnnotationRegion[];
+  spotlightRegions?: SpotlightRegion[];
   previewWidth?: number;
   previewHeight?: number;
   cursorData?: CursorFrame[];
@@ -134,7 +134,7 @@ export class GifExporter {
         width: this.config.width,
         height: this.config.height,
         wallpaper: this.config.wallpaper,
-        zoomRegions: this.config.zoomRegions,
+        videoSegments: this.config.videoSegments,
         showShadow: this.config.showShadow,
         shadowIntensity: this.config.shadowIntensity,
         showBlur: this.config.showBlur,
@@ -145,6 +145,7 @@ export class GifExporter {
         videoWidth: videoInfo.width,
         videoHeight: videoInfo.height,
         annotationRegions: this.config.annotationRegions,
+        spotlightRegions: this.config.spotlightRegions,
         previewWidth: this.config.previewWidth,
         previewHeight: this.config.previewHeight,
         cursorData: this.config.cursorData,

@@ -41,6 +41,9 @@ export interface SegmentTransform {
   scaleY: number;
   positionX: number;   // px offset from center
   positionY: number;
+  zoom: number;        // camera zoom multiplier (1.0 = no zoom)
+  focusX: number;      // normalized horizontal look-at point (0-1)
+  focusY: number;      // normalized vertical look-at point (0-1)
 }
 
 export const DEFAULT_SEGMENT_TRANSFORM: SegmentTransform = {
@@ -49,9 +52,12 @@ export const DEFAULT_SEGMENT_TRANSFORM: SegmentTransform = {
   scaleY: 1,
   positionX: 0,
   positionY: 0,
+  zoom: 1,
+  focusX: 0.5,
+  focusY: 0.5,
 };
 
-export type TransformProperty = 'rotation' | 'scaleX' | 'scaleY' | 'positionX' | 'positionY';
+export type TransformProperty = 'rotation' | 'scaleX' | 'scaleY' | 'positionX' | 'positionY' | 'zoom' | 'focusX' | 'focusY';
 export type EasingType = 'linear' | 'ease-in' | 'ease-out' | 'ease-in-out';
 
 export interface PropertyKeyframe {
@@ -60,6 +66,7 @@ export interface PropertyKeyframe {
   property: TransformProperty;
   value: number;
   easing: EasingType;
+  source?: 'zoom' | 'zoom-auto' | 'manual';  // 'zoom' = user pan point, 'zoom-auto' = auto-generated boundary
 }
 
 export interface VideoSegment {
@@ -159,6 +166,51 @@ export const DEFAULT_CROP_REGION: CropRegion = {
   width: 1,
   height: 1,
 };
+
+export type SpotlightAnimProperty = 'x' | 'y' | 'width' | 'height';
+
+export interface SpotlightKeyframe {
+  id: string;
+  timeMs: number;      // relative to spotlight startMs
+  property: SpotlightAnimProperty;
+  value: number;
+  easing: EasingType;
+  source: 'spotlight' | 'spotlight-auto';
+}
+
+export interface SpotlightRegion {
+  id: string;
+  startMs: number;
+  endMs: number;
+  // Position & size as percentages (0-100) of video dimensions
+  x: number;       // left edge %
+  y: number;       // top edge %
+  width: number;   // width %
+  height: number;  // height %
+  borderRadius: number;  // px
+  dimOpacity: number;    // 0-1, how dark the outside area is
+  keyframes?: SpotlightKeyframe[];
+}
+
+export const DEFAULT_SPOTLIGHT_REGION: Omit<SpotlightRegion, 'id' | 'startMs' | 'endMs'> = {
+  x: 25,
+  y: 25,
+  width: 50,
+  height: 50,
+  borderRadius: 8,
+  dimOpacity: 0.6,
+};
+
+/** Duration in ms for spotlight dim fade-in/fade-out */
+export const SPOTLIGHT_FADE_MS = 200;
+
+/** Compute the effective dim opacity at a given time, with smooth fade in/out at edges */
+export function getSpotlightFadeOpacity(spot: SpotlightRegion, timeMs: number, fadeDurationMs = SPOTLIGHT_FADE_MS): number {
+  if (timeMs < spot.startMs || timeMs > spot.endMs) return 0;
+  const fadeIn = Math.min(1, (timeMs - spot.startMs) / fadeDurationMs);
+  const fadeOut = Math.min(1, (spot.endMs - timeMs) / fadeDurationMs);
+  return spot.dimOpacity * Math.min(fadeIn, fadeOut);
+}
 
 export const ZOOM_DEPTH_SCALES: Record<ZoomDepth, number> = {
   1: 1.25,
