@@ -319,17 +319,22 @@ export function getUniqueManualKeyframeTimes(keyframes: PropertyKeyframe[]): num
 export const MIN_PAN_OFFSET_MS = 30;
 
 /**
- * Clamp a time value so it stays at least MIN_PAN_OFFSET_MS away from
- * the zoom region boundaries. Prevents pan points from snapping to
- * and corrupting t1/t4 boundary keyframes.
+ * Clamp a time value so it stays at least `enterOffsetMs` / `exitOffsetMs`
+ * away from the zoom region boundaries. Prevents pan points from landing
+ * inside the zoom-in / zoom-out transition and corrupting those animations.
+ *
+ * Pass the region's enter/exit transition durations so that pan points are
+ * always placed *after* the zoom-in and *before* the zoom-out.
  */
 export function clampToPanRange(
   relTime: number,
   regionRelStart: number,
   regionRelEnd: number,
+  enterOffsetMs: number = MIN_PAN_OFFSET_MS,
+  exitOffsetMs: number = MIN_PAN_OFFSET_MS,
 ): number {
-  const minTime = regionRelStart + MIN_PAN_OFFSET_MS;
-  const maxTime = regionRelEnd - MIN_PAN_OFFSET_MS;
+  const minTime = regionRelStart + Math.max(enterOffsetMs, MIN_PAN_OFFSET_MS);
+  const maxTime = regionRelEnd - Math.max(exitOffsetMs, MIN_PAN_OFFSET_MS);
   if (minTime >= maxTime) {
     // Region too short for safe pan points — use midpoint
     return Math.round((regionRelStart + regionRelEnd) / 2);

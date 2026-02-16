@@ -463,6 +463,9 @@ export default function VideoEditor() {
 
         if (!overlapsNew) return { ...seg, keyframes: nonZoomKfs };
 
+        const enterMs = region.enterTransition?.durationMs ?? 400;
+        const exitMs = region.exitTransition?.durationMs ?? 400;
+
         if (isMove) {
           // Pure move: shift all existing zoom keyframes by the time delta
           const shiftedKfs = seg.keyframes
@@ -477,7 +480,18 @@ export default function VideoEditor() {
             // Clamp to segment bounds
             .filter(kf => kf.timeMs >= 0 && kf.timeMs <= (segEnd - seg.sourceStartMs));
 
-          return { ...seg, keyframes: [...nonZoomKfs, ...shiftedKfs] };
+          // After shifting, enforce minimum distance of pan points from new boundaries
+          const newRelStart = newStartMs - seg.sourceStartMs;
+          const newRelEnd = newEndMs - seg.sourceStartMs;
+          const clampedShiftedKfs = shiftedKfs.map(kf => {
+            if (kf.source !== 'zoom') return kf;
+            const clamped = clampToPanRange(kf.timeMs, newRelStart, newRelEnd, enterMs, exitMs);
+            return clamped !== kf.timeMs ? { ...kf, timeMs: clamped } : kf;
+          });
+
+          let finalKfs = [...nonZoomKfs, ...clampedShiftedKfs];
+          finalKfs = syncZoomBoundaries(finalKfs, newRelStart, newRelEnd);
+          return { ...seg, keyframes: finalKfs };
         }
 
         // Resize: preserve user pan points, only regenerate auto-boundary keyframes
@@ -488,23 +502,31 @@ export default function VideoEditor() {
           return absTime >= newStartMs && absTime <= newEndMs;
         });
 
+        // Clamp preserved pan points so they stay outside transition zones
+        const clampedStart = Math.max(newStartMs, seg.sourceStartMs);
+        const clampedEnd = Math.min(newEndMs, segEnd);
+        const newRelStart = clampedStart - seg.sourceStartMs;
+        const newRelEnd = clampedEnd - seg.sourceStartMs;
+        const clampedPanKfs = panPointKfs.map(kf => {
+          const clamped = clampToPanRange(kf.timeMs, newRelStart, newRelEnd, enterMs, exitMs);
+          return clamped !== kf.timeMs ? { ...kf, timeMs: clamped } : kf;
+        });
+
         // Use first pan point for zoom-in destination (t2), last for hold-end (t3)
-        const firstPan = getFirstPanPointFocus(panPointKfs);
-        const lastPan = getLastPanPointFocus(panPointKfs);
-        const panTimes = [...new Set(panPointKfs.map(kf => kf.timeMs))].sort((a, b) => a - b);
+        const firstPan = getFirstPanPointFocus(clampedPanKfs);
+        const lastPan = getLastPanPointFocus(clampedPanKfs);
+        const panTimes = [...new Set(clampedPanKfs.map(kf => kf.timeMs))].sort((a, b) => a - b);
         const firstPanZoom = panTimes.length > 0
-          ? panPointKfs.find(kf => Math.abs(kf.timeMs - panTimes[0]) < 5 && kf.property === 'zoom')?.value
+          ? clampedPanKfs.find(kf => Math.abs(kf.timeMs - panTimes[0]) < 5 && kf.property === 'zoom')?.value
           : undefined;
         const lastPanZoom = panTimes.length > 0
-          ? panPointKfs.find(kf => Math.abs(kf.timeMs - panTimes[panTimes.length - 1]) < 5 && kf.property === 'zoom')?.value
+          ? clampedPanKfs.find(kf => Math.abs(kf.timeMs - panTimes[panTimes.length - 1]) < 5 && kf.property === 'zoom')?.value
           : undefined;
 
         const targetZoom = firstPanZoom ?? ZOOM_DEPTH_SCALES[region.depth];
-        const clampedStart = Math.max(newStartMs, seg.sourceStartMs);
-        const clampedEnd = Math.min(newEndMs, segEnd);
         const newAutoKeyframes = generateZoomKeyframes({
-          startRelativeMs: clampedStart - seg.sourceStartMs,
-          endRelativeMs: clampedEnd - seg.sourceStartMs,
+          startRelativeMs: newRelStart,
+          endRelativeMs: newRelEnd,
           targetZoom,
           focusX: firstPan?.focusX ?? region.focus.cx,
           focusY: firstPan?.focusY ?? region.focus.cy,
@@ -515,7 +537,15 @@ export default function VideoEditor() {
           exitZoom: lastPanZoom,
         });
 
-        return { ...seg, keyframes: [...nonZoomKfs, ...panPointKfs, ...newAutoKeyframes] };
+        // Remove auto keyframes that collide with preserved pan point times
+        const panTimeSet = new Set(clampedPanKfs.map(kf => kf.timeMs));
+        const dedupedAutoKfs = newAutoKeyframes.filter(kf =>
+          !Array.from(panTimeSet).some(t => Math.abs(t - kf.timeMs) < 5)
+        );
+
+        let finalKfs = [...nonZoomKfs, ...clampedPanKfs, ...dedupedAutoKfs];
+        finalKfs = syncZoomBoundaries(finalKfs, newRelStart, newRelEnd);
+        return { ...seg, keyframes: finalKfs };
       });
 
       return {
@@ -557,7 +587,9 @@ export default function VideoEditor() {
           if (s.id !== seg.id) return s;
           const regionRelStart = region.startMs - s.sourceStartMs;
           const regionRelEnd = region.endMs - s.sourceStartMs;
-          const relTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd);
+          const enterMs = region.enterTransition?.durationMs ?? 400;
+          const exitMs = region.exitTransition?.durationMs ?? 400;
+          const relTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd, enterMs, exitMs);
           let kfs = s.keyframes;
           // Upsert focusX, focusY, and zoom (use target zoom, not interpolated mid-transition value)
           const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
@@ -1314,7 +1346,9 @@ export default function VideoEditor() {
         if (s.id !== seg.id) return s;
         const regionRelStart = region.startMs - s.sourceStartMs;
         const regionRelEnd = region.endMs - s.sourceStartMs;
-        const relTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd);
+        const enterMs = region.enterTransition?.durationMs ?? 400;
+        const exitMs = region.exitTransition?.durationMs ?? 400;
+        const relTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd, enterMs, exitMs);
         const currentTransform = resolveTransformAtTime(s.keyframes, relTime, s.transform);
         const targetZoom = ZOOM_DEPTH_SCALES[region.depth];
         let kfs = s.keyframes;
@@ -1346,7 +1380,9 @@ export default function VideoEditor() {
     if (!seg) return;
     const regionRelStart = region.startMs - seg.sourceStartMs;
     const regionRelEnd = region.endMs - seg.sourceStartMs;
-    const relTime = clampToPanRange(sourceTimeMs - seg.sourceStartMs, regionRelStart, regionRelEnd);
+    const enterMs = region.enterTransition?.durationMs ?? 400;
+    const exitMs = region.exitTransition?.durationMs ?? 400;
+    const relTime = clampToPanRange(sourceTimeMs - seg.sourceStartMs, regionRelStart, regionRelEnd, enterMs, exitMs);
 
     // Find the most recent pan point before the playhead
     const panPoints = seg.keyframes.filter(kf => kf.source === 'zoom');
@@ -1401,7 +1437,9 @@ export default function VideoEditor() {
         if (!region) return s;
         const regionRelStart = region.startMs - s.sourceStartMs;
         const regionRelEnd = region.endMs - s.sourceStartMs;
-        const clampedRelTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd);
+        const enterMs = region.enterTransition?.durationMs ?? 400;
+        const exitMs = region.exitTransition?.durationMs ?? 400;
+        const clampedRelTime = clampToPanRange(sourceTimeMs - s.sourceStartMs, regionRelStart, regionRelEnd, enterMs, exitMs);
 
         // Snap to existing pan point near playhead, or use clamped playhead time
         const targetTime = currentZoomKeyframeTime?.segmentId === seg.id

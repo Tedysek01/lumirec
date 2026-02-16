@@ -917,16 +917,19 @@ export default function TimelineEditor({
       return false;
     }
 
-    // Helper to check overlap against a specific set of regions
+    // newSpan is in display-time (from dnd-timeline); convert region bounds
+    // to display-time before comparison so coordinates match.
     const checkOverlap = (regions: (ZoomRegion | TrimRegion)[]) => {
       return regions.some((region) => {
         if (region.id === excludeId) return false;
-        const gapBefore = newSpan.start - region.endMs;
-        const gapAfter = region.startMs - newSpan.end;
-        // Snap if gap is 2ms or less
+        const dispStart = sourceToDisplayTime(videoSegments, region.startMs);
+        const dispEnd = sourceToDisplayTime(videoSegments, region.endMs);
+        const gapBefore = newSpan.start - dispEnd;
+        const gapAfter = dispStart - newSpan.end;
+        // Reject if gap is 2ms or less (too close)
         if (gapBefore > 0 && gapBefore <= 2) return true;
         if (gapAfter > 0 && gapAfter <= 2) return true;
-        return !(newSpan.end <= region.startMs || newSpan.start >= region.endMs);
+        return !(newSpan.end <= dispStart || newSpan.start >= dispEnd);
       });
     };
 
@@ -939,7 +942,7 @@ export default function TimelineEditor({
     }
 
     return false;
-  }, [zoomRegions, trimRegions, annotationRegions]);
+  }, [zoomRegions, trimRegions, annotationRegions, videoSegments]);
 
   const handleAddZoom = useCallback(() => {
     if (!videoDuration || videoDuration === 0 || totalMs === 0) {
