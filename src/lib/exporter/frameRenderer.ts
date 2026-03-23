@@ -1,4 +1,4 @@
-import { Application, Container, Sprite, Graphics, BlurFilter, Texture } from 'pixi.js';
+import { Application, Container, Sprite, Graphics, BlurFilter, Texture, ImageSource } from 'pixi.js';
 import type { CropRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
 import { getSpotlightFadeOpacity } from '@/components/video-editor/types';
 import { applyZoomTransform } from '@/components/video-editor/videoPlayback/zoomTransform';
@@ -262,17 +262,22 @@ export class FrameRenderer {
 
     this.currentVideoTime = timestamp / 1000000;
 
-    // Create or update video sprite from VideoFrame
+    // Create or update video sprite from VideoFrame.
+    // Use ImageSource directly to bypass Pixi's global texture cache —
+    // Texture.from() would pollute the shared cache and corrupt the editor's
+    // VideoPlayback Pixi instance when textures are destroyed after export.
+    const newSource = new ImageSource({ resource: videoFrame as any });
+    const newTexture = new Texture({ source: newSource });
+
     if (!this.videoSprite) {
-      const texture = Texture.from(videoFrame as any);
-      this.videoSprite = new Sprite(texture);
+      this.videoSprite = new Sprite(newTexture);
       this.videoContainer.addChild(this.videoSprite);
     } else {
-      // Destroy old texture to avoid memory leaks, then create new one
       const oldTexture = this.videoSprite.texture;
-      const newTexture = Texture.from(videoFrame as any);
       this.videoSprite.texture = newTexture;
-      oldTexture.destroy(true);
+      // Destroy old texture and its source without touching the global cache
+      oldTexture.source.destroy();
+      oldTexture.destroy();
     }
 
     // Apply layout
@@ -560,12 +565,19 @@ export class FrameRenderer {
 
   destroy(): void {
     if (this.videoSprite) {
-      this.videoSprite.destroy();
+      // Destroy the current frame texture/source before destroying the sprite
+      if (this.videoSprite.texture) {
+        this.videoSprite.texture.source.destroy();
+        this.videoSprite.texture.destroy();
+      }
+      this.videoSprite.destroy({ texture: false });
       this.videoSprite = null;
     }
     this.backgroundSprite = null;
     if (this.app) {
-      this.app.destroy(true, { children: true, texture: true, textureSource: true });
+      // Do NOT pass textureSource:true — that would destroy Pixi's global
+      // texture resources shared with the editor's VideoPlayback instance.
+      this.app.destroy(true, { children: true, texture: false, textureSource: false });
       this.app = null;
     }
     this.cameraContainer = null;

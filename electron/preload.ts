@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSources: async (opts: Electron.SourcesOptions) => {
     return await ipcRenderer.invoke('get-sources', opts)
   },
+  getDisplays: () => {
+    return ipcRenderer.invoke('get-displays')
+  },
   switchToEditor: () => {
     return ipcRenderer.invoke('switch-to-editor')
   },
@@ -101,6 +104,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   getCursorData: (videoFilePath: string) => {
     return ipcRenderer.invoke('get-cursor-data', videoFilePath)
+  },
+  // Screen recording permission
+  getScreenPermissionStatus: () => {
+    return ipcRenderer.invoke('get-screen-permission-status')
+  },
+  openScreenRecordingSettings: () => {
+    return ipcRenderer.invoke('open-screen-recording-settings')
   },
   // Microphone permission
   getMicPermissionStatus: () => {

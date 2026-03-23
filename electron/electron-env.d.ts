@@ -25,6 +25,7 @@ declare namespace NodeJS {
 interface Window {
   electronAPI: {
     getSources: (opts: Electron.SourcesOptions) => Promise<ProcessedDesktopSource[]>
+    getDisplays: () => Promise<ProcessedDesktopSource[]>
     switchToEditor: () => Promise<void>
     openSourceSelector: () => Promise<void>
     selectSource: (source: any) => Promise<any>
@@ -51,6 +52,9 @@ interface Window {
     stopCursorTracking: () => Promise<{ success: boolean; frames: { t: number; x: number; y: number }[] }>
     storeCursorData: (data: any, fileName: string) => Promise<{ success: boolean; path?: string }>
     getCursorData: (videoFilePath: string) => Promise<{ success: boolean; frames: { t: number; x: number; y: number }[]; cursorFree?: boolean }>
+    // Screen recording permission
+    getScreenPermissionStatus: () => Promise<string>
+    openScreenRecordingSettings: () => Promise<void>
     // Microphone permission
     getMicPermissionStatus: () => Promise<string>
     requestMicPermission: () => Promise<boolean>

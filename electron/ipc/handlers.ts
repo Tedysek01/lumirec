@@ -18,13 +18,31 @@ export function registerIpcHandlers(
   onRecordingStateChange?: (recording: boolean, sourceName: string) => void
 ) {
   ipcMain.handle('get-sources', async (_, opts) => {
-    const sources = await desktopCapturer.getSources(opts)
-    return sources.map(source => ({
-      id: source.id,
-      name: source.name,
-      display_id: source.display_id,
-      thumbnail: source.thumbnail ? source.thumbnail.toDataURL() : null,
-      appIcon: source.appIcon ? source.appIcon.toDataURL() : null
+    try {
+      const sources = await desktopCapturer.getSources(opts)
+      return sources.map(source => ({
+        id: source.id,
+        name: source.name,
+        display_id: source.display_id,
+        thumbnail: source.thumbnail ? source.thumbnail.toDataURL() : null,
+        appIcon: source.appIcon ? source.appIcon.toDataURL() : null
+      }))
+    } catch {
+      // On macOS, getSources throws when screen recording permission is denied
+      return []
+    }
+  })
+
+  // Fallback for macOS 15+/26 where desktopCapturer is blocked:
+  // enumerate displays via electron.screen (no screen recording permission needed)
+  ipcMain.handle('get-displays', () => {
+    return screen.getAllDisplays().map((display, index) => ({
+      id: `screen:${display.id}:${index}`,
+      name: display.label || `Display ${index + 1}`,
+      display_id: String(display.id),
+      thumbnail: null,
+      appIcon: null,
+      bounds: display.bounds,
     }))
   })
 
@@ -429,6 +447,18 @@ export function registerIpcHandlers(
     } catch {
       return { success: false, frames: [] };
     }
+  });
+
+  // --- Screen Recording Permission ---
+  ipcMain.handle('get-screen-permission-status', () => {
+    if (process.platform === 'darwin') {
+      return systemPreferences.getMediaAccessStatus('screen');
+    }
+    return 'granted';
+  });
+
+  ipcMain.handle('open-screen-recording-settings', () => {
+    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
   });
 
   // --- Microphone Permission ---

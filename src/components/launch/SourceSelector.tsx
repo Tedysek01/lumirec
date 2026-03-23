@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "../ui/button";
-import { MdCheck } from "react-icons/md";
+import { MdCheck, MdRefresh } from "react-icons/md";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Card } from "../ui/card";
 import styles from "./SourceSelector.module.css";
@@ -17,16 +17,21 @@ export function SourceSelector() {
   const [sources, setSources] = useState<DesktopSource[]>([]);
   const [selectedSource, setSelectedSource] = useState<DesktopSource | null>(null);
   const [loading, setLoading] = useState(true);
+  const [screenPermission, setScreenPermission] = useState<string>('granted');
 
-  useEffect(() => {
-    async function fetchSources() {
-      setLoading(true);
-      try {
-        const rawSources = await window.electronAPI.getSources({
-          types: ['screen', 'window'],
-          thumbnailSize: { width: 320, height: 180 },
-          fetchWindowIcons: true
-        });
+  const fetchSources = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Always call getSources() first — on macOS this triggers the permission prompt
+      // which adds the app to System Settings > Screen Recording
+      const rawSources = await window.electronAPI.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 320, height: 180 },
+        fetchWindowIcons: true
+      });
+
+      if (rawSources.length > 0) {
+        setScreenPermission('granted');
         setSources(
           rawSources.map(source => ({
             id: source.id,
@@ -39,14 +44,40 @@ export function SourceSelector() {
             appIcon: source.appIcon
           }))
         );
-      } catch (error) {
-        console.error('Error loading sources:', error);
-      } finally {
-        setLoading(false);
+      } else {
+        // desktopCapturer blocked (macOS 15+/26) — fall back to electron.screen displays
+        const displays = await window.electronAPI.getDisplays();
+        if (displays.length > 0) {
+          setScreenPermission('granted');
+          setSources(displays);
+        } else if (window.electronAPI.getScreenPermissionStatus) {
+          const status = await window.electronAPI.getScreenPermissionStatus();
+          setScreenPermission(status);
+        }
       }
+    } catch (error) {
+      console.error('Error loading sources:', error);
+      // desktopCapturer blocked — try electron.screen fallback
+      try {
+        const displays = await window.electronAPI.getDisplays();
+        if (displays.length > 0) {
+          setScreenPermission('granted');
+          setSources(displays);
+          return;
+        }
+      } catch {}
+      if (window.electronAPI.getScreenPermissionStatus) {
+        const status = await window.electronAPI.getScreenPermissionStatus();
+        setScreenPermission(status);
+      }
+    } finally {
+      setLoading(false);
     }
-    fetchSources();
   }, []);
+
+  useEffect(() => {
+    fetchSources();
+  }, [fetchSources]);
 
   const screenSources = sources.filter(s => s.id.startsWith('screen:'));
   const windowSources = sources.filter(s => s.id.startsWith('window:'));
@@ -67,6 +98,38 @@ export function SourceSelector() {
     );
   }
 
+  // macOS screen recording permission not granted
+  if (screenPermission !== 'granted') {
+    const isDenied = screenPermission === 'denied' || screenPermission === 'restricted';
+    return (
+      <div className={`min-h-screen flex flex-col items-center justify-center ${styles.glassContainer}`}>
+        <div className="flex flex-col items-center gap-3 px-8 text-center max-w-sm">
+          <div className="text-3xl">🔒</div>
+          <p className="text-sm font-medium text-zinc-200">Screen Recording Permission Required</p>
+          <p className="text-xs text-zinc-400">
+            {isDenied
+              ? 'Screen Recording was denied. Open System Settings, find Electron (or Lumirec) in the list and enable it, then relaunch the app.'
+              : 'Go to System Settings → Privacy & Security → Screen Recording and enable Electron (or Lumirec), then click "Check again".'}
+          </p>
+          <Button
+            className="text-xs px-4 py-1"
+            onClick={async () => {
+              await window.electronAPI.openScreenRecordingSettings?.();
+            }}
+          >
+            Open System Settings
+          </Button>
+          <button
+            className="text-xs text-zinc-500 hover:text-zinc-300 flex items-center gap-1 mt-1"
+            onClick={fetchSources}
+          >
+            <MdRefresh className="w-3 h-3" /> Check again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen flex flex-col items-center justify-center ${styles.glassContainer}`}>
       <div className="flex-1 flex flex-col w-full max-w-xl" style={{ padding: 0 }}>
@@ -78,6 +141,14 @@ export function SourceSelector() {
             <div className="h-72 flex flex-col justify-stretch">
             <TabsContent value="screens" className="h-full">
               <div className="grid grid-cols-2 gap-2 h-full overflow-y-auto pr-1 relative">
+                {screenSources.length === 0 && (
+                  <div className="col-span-2 flex flex-col items-center justify-center h-full gap-2 text-zinc-500">
+                    <p className="text-xs">No screens found</p>
+                    <button className="text-xs flex items-center gap-1 hover:text-zinc-300" onClick={fetchSources}>
+                      <MdRefresh className="w-3 h-3" /> Refresh
+                    </button>
+                  </div>
+                )}
                 {screenSources.map(source => (
                   <Card
                     key={source.id}
@@ -108,6 +179,14 @@ export function SourceSelector() {
             </TabsContent>
             <TabsContent value="windows" className="h-full">
               <div className="grid grid-cols-2 gap-2 h-full overflow-y-auto pr-1 relative">
+                {windowSources.length === 0 && (
+                  <div className="col-span-2 flex flex-col items-center justify-center h-full gap-2 text-zinc-500">
+                    <p className="text-xs">No windows found</p>
+                    <button className="text-xs flex items-center gap-1 hover:text-zinc-300" onClick={fetchSources}>
+                      <MdRefresh className="w-3 h-3" /> Refresh
+                    </button>
+                  </div>
+                )}
                 {windowSources.map(source => (
                   <Card
                     key={source.id}
