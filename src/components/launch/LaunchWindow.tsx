@@ -57,23 +57,26 @@ export function LaunchWindow() {
   const [hasSelectedSource, setHasSelectedSource] = useState(false);
 
   useEffect(() => {
-    const checkSelectedSource = async () => {
-      if (window.electronAPI) {
-        const source = await window.electronAPI.getSelectedSource();
-        if (source) {
-          setSelectedSource(source.name);
-          setHasSelectedSource(true);
-        } else {
-          setSelectedSource("Screen");
-          setHasSelectedSource(false);
-        }
+    const applySource = (source: any) => {
+      if (source) {
+        setSelectedSource(source.name);
+        setHasSelectedSource(true);
+      } else {
+        setSelectedSource("Screen");
+        setHasSelectedSource(false);
       }
     };
 
-    checkSelectedSource();
+    // Initial fetch (covers case where a source was picked before HUD mounted).
+    if (window.electronAPI) {
+      window.electronAPI.getSelectedSource().then(applySource);
+    }
 
-    const interval = setInterval(checkSelectedSource, 500);
-    return () => clearInterval(interval);
+    // Subscribe to push updates from main instead of polling.
+    const unsubscribe = window.electronAPI?.onSelectedSourceChange?.(applySource);
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
   const openSourceSelector = () => {
@@ -160,7 +163,7 @@ export function LaunchWindow() {
               className={`gap-1 bg-transparent hover:bg-transparent px-1 text-xs ${styles.electronNoDrag}`}
               disabled={recording}
               onClick={(e) => {
-                // Left-click toggles mic, right-click or long-press opens popover
+                // Shift-click opens popover; plain click toggles mic
                 if (!e.shiftKey) {
                   e.preventDefault();
                   handleMicToggle();

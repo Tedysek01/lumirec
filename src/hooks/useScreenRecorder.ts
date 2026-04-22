@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { fixWebmDuration } from "@fix-webm-duration/fix";
+import { toast } from "sonner";
 
 export interface AudioConfig {
   micEnabled: boolean;
@@ -145,7 +146,7 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
       throw new Error(result.error || 'Native recording failed to start');
     }
 
-    startTime.current = Date.now();
+    startTime.current = performance.now();
     setRecording(true);
     window.electronAPI?.setRecordingState(true);
 
@@ -229,7 +230,7 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
       console.warn("Unable to lock 4K/60fps constraints, using best available track settings.", error);
     }
 
-    let { width = 1920, height = 1080, frameRate = TARGET_FRAME_RATE } = videoTrack.getSettings();
+    let { width = 1920, height = 1080 } = videoTrack.getSettings();
 
     // Ensure dimensions are divisible by 2 for VP9/AV1 codec compatibility
     width = Math.floor(width / 2) * 2;
@@ -276,12 +277,6 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
 
     const mimeType = selectMimeType(micEnabled && micStreamRef.current !== null);
 
-    console.log(
-      `Recording at ${width}x${height} @ ${frameRate ?? TARGET_FRAME_RATE}fps using ${mimeType} / ${Math.round(
-        videoBitsPerSecond / 1_000_000
-      )} Mbps${micEnabled ? ' + mic audio' : ''}`
-    );
-
     chunks.current = [];
     const recorder = new MediaRecorder(combinedStream, {
       mimeType,
@@ -295,7 +290,7 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
       stream.current = null;
       cleanupAudio();
       if (chunks.current.length === 0) return;
-      const duration = Date.now() - startTime.current;
+      const duration = performance.now() - startTime.current;
       const recordedChunks = chunks.current;
       const buggyBlob = new Blob(recordedChunks, { type: mimeType });
       // Clear chunks early to free memory immediately after blob creation
@@ -343,7 +338,7 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
       setRecording(false);
     };
     recorder.start(1000);
-    startTime.current = Date.now();
+    startTime.current = performance.now();
     setRecording(true);
     window.electronAPI?.setRecordingState(true);
 
@@ -359,7 +354,7 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
     try {
       const selectedSource = await window.electronAPI.getSelectedSource();
       if (!selectedSource) {
-        alert("Please select a source to record");
+        toast.error("Please select a source to record");
         return;
       }
 
