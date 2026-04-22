@@ -22,6 +22,7 @@ interface GifExporterConfig {
   showBlur: boolean;
   motionBlurEnabled?: boolean;
   borderRadius?: number;
+  videoBorderRadius?: number;
   padding?: number;
   videoPadding?: number;
   cropRegion: CropRegion;
@@ -140,6 +141,7 @@ export class GifExporter {
         showBlur: this.config.showBlur,
         motionBlurEnabled: this.config.motionBlurEnabled,
         borderRadius: this.config.borderRadius,
+        videoBorderRadius: this.config.videoBorderRadius,
         padding: this.config.padding,
         cropRegion: this.config.cropRegion,
         videoWidth: videoInfo.width,

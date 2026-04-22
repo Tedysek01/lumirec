@@ -10,6 +10,11 @@ interface LayoutParams {
   cropRegion?: CropRegion;
   lockedVideoDimensions?: { width: number; height: number } | null;
   borderRadius?: number;
+  /**
+   * Corner radius (px) for the video sprite's rounded-rect mask. Falls back
+   * to `borderRadius` when undefined to preserve legacy behavior.
+   */
+  videoBorderRadius?: number;
   padding?: number;
 }
 
@@ -23,7 +28,10 @@ interface LayoutResult {
 }
 
 export function layoutVideoContent(params: LayoutParams): LayoutResult | null {
-  const { container, app, videoSprite, maskGraphics, videoElement, cropRegion, lockedVideoDimensions, borderRadius = 0, padding = 0 } = params;
+  const { container, app, videoSprite, maskGraphics, videoElement, cropRegion, lockedVideoDimensions, borderRadius = 0, videoBorderRadius, padding = 0 } = params;
+  // Prefer the explicit videoBorderRadius when provided; fall back to the
+  // legacy borderRadius so older callers keep rounding the video sprite.
+  const effectiveVideoRadius = videoBorderRadius ?? borderRadius;
 
   const videoWidth = lockedVideoDimensions?.width || videoElement.videoWidth;
   const videoHeight = lockedVideoDimensions?.height || videoElement.videoHeight;
@@ -95,9 +103,14 @@ export function layoutVideoContent(params: LayoutParams): LayoutResult | null {
   const maskX = centerOffsetX;
   const maskY = centerOffsetY;
   
-  // Apply border radius
+  // Apply rounded-corner mask directly to the video sprite — this gives
+  // Screen-Studio-style rounded video corners independent of the outer
+  // container framing. Clamp the radius so it never exceeds half the smaller
+  // side (otherwise PixiJS draws artifacts on narrow crops).
+  const maxRadius = Math.min(croppedDisplayWidth, croppedDisplayHeight) / 2;
+  const safeRadius = Math.max(0, Math.min(effectiveVideoRadius, maxRadius));
   maskGraphics.clear();
-  maskGraphics.roundRect(maskX, maskY, croppedDisplayWidth, croppedDisplayHeight, borderRadius);
+  maskGraphics.roundRect(maskX, maskY, croppedDisplayWidth, croppedDisplayHeight, safeRadius);
   maskGraphics.fill({ color: 0xffffff });
 
   return {

@@ -20,6 +20,7 @@ export function deriveInitialEnhancements(
   const visual = {
     padding: 80,
     borderRadius: 24,
+    videoBorderRadius: 16,
     shadowIntensity: 30,
   };
   // 2. Auto-zooms from cursor data (if available)

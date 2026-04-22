@@ -16,6 +16,7 @@ interface VideoExporterConfig extends ExportConfig {
   showBlur: boolean;
   motionBlurEnabled?: boolean;
   borderRadius?: number;
+  videoBorderRadius?: number;
   padding?: number;
   videoPadding?: number;
   cropRegion: CropRegion;
@@ -109,6 +110,7 @@ export class VideoExporter {
         showBlur: this.config.showBlur,
         motionBlurEnabled: this.config.motionBlurEnabled,
         borderRadius: this.config.borderRadius,
+        videoBorderRadius: this.config.videoBorderRadius,
         padding: this.config.padding,
         cropRegion: this.config.cropRegion,
         videoWidth: videoInfo.width,

@@ -66,6 +66,13 @@ export function deserializeProject(json: string): ProjectFileData {
   // Migrate: convert legacy zoom regions to keyframes on segments
   migrateZoomRegionsToKeyframes(data.editorState);
 
+  // Migrate: backfill videoBorderRadius for projects saved before the field
+  // existed. Default to 0 to preserve the exact visual of legacy projects
+  // (they intentionally had no video-sprite rounding).
+  if (typeof (data.editorState as Partial<EditorUndoableState>).videoBorderRadius !== 'number') {
+    data.editorState.videoBorderRadius = 0;
+  }
+
   return data;
 }
 
