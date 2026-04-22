@@ -1206,8 +1206,6 @@ export default function VideoEditor() {
           onMotionBlurChange={(v) => updateState('motionBlurEnabled', v)}
           borderRadius={borderRadius}
           onBorderRadiusChange={(v) => updateStateDebounced('borderRadius', v)}
-          videoBorderRadius={videoBorderRadius}
-          onVideoBorderRadiusChange={(v) => updateStateDebounced('videoBorderRadius', v)}
           padding={padding}
           onPaddingChange={(v) => updateStateDebounced('padding', v)}
           cropRegion={cropRegion}

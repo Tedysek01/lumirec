@@ -43,7 +43,9 @@ export function createInitialEditorState(wallpaper: string = DEFAULT_WALLPAPER):
     showBlur: false,
     motionBlurEnabled: false,
     borderRadius: 0,
-    videoBorderRadius: 16,
+    // 0 = fall back to borderRadius. The "Video Corners" slider was removed —
+    // the single Roundness slider (borderRadius) controls video sprite rounding.
+    videoBorderRadius: 0,
     padding: 50,
     cropRegion: { ...DEFAULT_CROP_REGION },
     zoomRegions: [],
