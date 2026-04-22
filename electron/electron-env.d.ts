@@ -43,6 +43,7 @@ interface Window {
     clearCurrentVideoPath: () => Promise<{ success: boolean }>
     getPlatform: () => Promise<string>
     hudOverlayHide: () => void;
+    hudOverlayShow: () => void;
     hudOverlayClose: () => void;
     // Native recorder (cursor-free ScreenCaptureKit)
     nativeRecorderAvailable: () => Promise<boolean>

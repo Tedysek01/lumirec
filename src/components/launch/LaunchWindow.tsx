@@ -236,7 +236,7 @@ export function LaunchWindow() {
         >
           {recording ? (
             <>
-              <FaRegStopCircle size={14} className="text-destructive" />
+              <FaRegStopCircle size={14} className="text-destructive animate-pulse" />
               <span className="text-destructive font-mono">{formatTime(elapsed)}</span>
             </>
           ) : (
