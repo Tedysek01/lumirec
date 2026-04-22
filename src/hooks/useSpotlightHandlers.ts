@@ -84,23 +84,26 @@ export function useSpotlightHandlers({
     }));
   }, [setEditorStateDebounced]);
 
+  // Drag-stop and resize-stop are discrete events — commit immediately.
+  // Debouncing caused Rnd's position prop to lag the visual, which felt like
+  // the spotlight "fought" the drag.
   const handleSpotlightPositionChange = useCallback((id: string, position: { x: number; y: number }) => {
-    setEditorStateDebounced(prev => ({
+    setEditorState(prev => ({
       ...prev,
       spotlightRegions: prev.spotlightRegions.map((region) =>
         region.id === id ? { ...region, x: position.x, y: position.y } : region,
       ),
     }));
-  }, [setEditorStateDebounced]);
+  }, [setEditorState]);
 
   const handleSpotlightSizeChange = useCallback((id: string, size: { width: number; height: number }) => {
-    setEditorStateDebounced(prev => ({
+    setEditorState(prev => ({
       ...prev,
       spotlightRegions: prev.spotlightRegions.map((region) =>
         region.id === id ? { ...region, width: size.width, height: size.height } : region,
       ),
     }));
-  }, [setEditorStateDebounced]);
+  }, [setEditorState]);
 
   const handleAutoSpotlightApply = useCallback((newRegions: SpotlightRegion[], nextId: number) => {
     if (newRegions.length === 0) return;
