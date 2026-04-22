@@ -89,7 +89,7 @@ export default function VideoEditor() {
   // Destructure undoable state for convenient access
   const {
     wallpaper, shadowIntensity, showBlur, motionBlurEnabled,
-    borderRadius, padding, cropRegion, zoomRegions,
+    borderRadius, videoBorderRadius, padding, cropRegion, zoomRegions,
     trimRegions, videoSegments, annotationRegions, spotlightRegions, aspectRatio, cursorHighlight,
   } = editorState;
 
@@ -1711,6 +1711,7 @@ export default function VideoEditor() {
           showBlur,
           motionBlurEnabled,
           borderRadius,
+          videoBorderRadius,
           padding,
           videoPadding: padding,
           cropRegion,
@@ -1840,6 +1841,7 @@ export default function VideoEditor() {
           showBlur,
           motionBlurEnabled,
           borderRadius,
+          videoBorderRadius,
           padding,
           cropRegion,
           annotationRegions,
@@ -1894,7 +1896,7 @@ export default function VideoEditor() {
       setShowExportDialog(false);
       setExportProgress(null);
     }
-  }, [videoPath, wallpaper, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, padding, cropRegion, annotationRegions, spotlightRegions, isPlaying, aspectRatio, exportQuality, cursorData, cursorHighlight, videoSegments]);
+  }, [videoPath, wallpaper, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, videoBorderRadius, padding, cropRegion, annotationRegions, spotlightRegions, isPlaying, aspectRatio, exportQuality, cursorData, cursorHighlight, videoSegments]);
 
   const handleOpenExportDialog = useCallback(() => {
     if (!videoPath) {
@@ -2014,6 +2016,7 @@ export default function VideoEditor() {
                       showBlur={showBlur}
                       motionBlurEnabled={motionBlurEnabled}
                       borderRadius={borderRadius}
+                      videoBorderRadius={videoBorderRadius}
                       padding={padding}
                       cropRegion={cropRegion}
                       trimRegions={trimRegions}
@@ -2141,6 +2144,8 @@ export default function VideoEditor() {
           onMotionBlurChange={(v) => updateState('motionBlurEnabled', v)}
           borderRadius={borderRadius}
           onBorderRadiusChange={(v) => updateStateDebounced('borderRadius', v)}
+          videoBorderRadius={videoBorderRadius}
+          onVideoBorderRadiusChange={(v) => updateStateDebounced('videoBorderRadius', v)}
           padding={padding}
           onPaddingChange={(v) => updateStateDebounced('padding', v)}
           cropRegion={cropRegion}

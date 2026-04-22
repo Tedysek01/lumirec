@@ -14,6 +14,12 @@ export interface EditorUndoableState {
   showBlur: boolean;
   motionBlurEnabled: boolean;
   borderRadius: number;
+  /**
+   * Corner radius (in px) applied to the video sprite itself via a PixiJS
+   * Graphics mask. Distinct from `borderRadius`, which is reserved for the
+   * outer container / wallpaper framing. Screen Studio parity feature.
+   */
+  videoBorderRadius: number;
   padding: number;
   cropRegion: CropRegion;
   zoomRegions: ZoomRegion[];
@@ -37,6 +43,7 @@ export function createInitialEditorState(wallpaper: string = DEFAULT_WALLPAPER):
     showBlur: false,
     motionBlurEnabled: false,
     borderRadius: 0,
+    videoBorderRadius: 16,
     padding: 50,
     cropRegion: { ...DEFAULT_CROP_REGION },
     zoomRegions: [],
