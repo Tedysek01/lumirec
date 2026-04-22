@@ -69,6 +69,7 @@ import { type EditorUndoableState, createInitialEditorState } from "./editorStat
 import { useProjectFile } from "@/hooks/useProjectFile";
 import type { ProjectFileData } from "@/lib/projectFile";
 import type { CursorFrame } from "@/lib/cursorTracker";
+import { deriveInitialEnhancements } from "@/lib/autoEnhance";
 
 const WALLPAPER_COUNT = 18;
 const WALLPAPER_PATHS = Array.from({ length: WALLPAPER_COUNT }, (_, i) => `/wallpapers/wallpaper${i + 1}.jpg`);
@@ -147,7 +148,9 @@ export default function VideoEditor() {
   // --- Project Save/Load ---
   const handleLoadProject = useCallback((data: ProjectFileData, videoUrl: string) => {
     // Reset editor state (clears undo history)
-    resetEditorState(data.editorState);
+    // Force enhancementsApplied=true so loaded projects never re-trigger auto-enhance,
+    // including older .lumirec files saved before this field existed.
+    resetEditorState({ ...data.editorState, enhancementsApplied: true });
     // Set video path
     setVideoPath(videoUrl);
     window.electronAPI.setCurrentVideoPath(videoUrl.replace(/^file:\/\//, ''));
@@ -248,27 +251,60 @@ export default function VideoEditor() {
     }
     // Convert file:// URL back to file path for the IPC call
     const filePath = videoPath.replace(/^file:\/\//, '');
+
+    // Apply auto-enhancements on first load (exactly once, single undo snapshot).
+    // Merges visual polish + optional auto-zooms with the cursor-free flag update
+    // so the whole change is reversible via one Cmd+Z.
+    const maybeApplyEnhancements = (frames: CursorFrame[], cursorFree: boolean) => {
+      setEditorState(prev => {
+        if (prev.enhancementsApplied) {
+          // Still need to honor cursorFree flag on re-load of same video
+          if (cursorFree && !prev.cursorHighlight.cursorFree) {
+            return {
+              ...prev,
+              cursorHighlight: {
+                ...prev.cursorHighlight,
+                cursorFree: true,
+                cursorType: prev.cursorHighlight.cursorType === 'none' ? 'native' : prev.cursorHighlight.cursorType,
+              },
+            };
+          }
+          return prev;
+        }
+        const durationMs = (videoPlaybackRef.current?.video?.duration ?? 0) * 1000;
+        const enhancements = deriveInitialEnhancements({
+          cursorFrames: frames,
+          videoDurationMs: durationMs,
+        });
+        const next: EditorUndoableState = {
+          ...prev,
+          ...enhancements,
+          enhancementsApplied: true,
+        };
+        if (cursorFree) {
+          next.cursorHighlight = {
+            ...prev.cursorHighlight,
+            cursorFree: true,
+            cursorType: prev.cursorHighlight.cursorType === 'none' ? 'native' : prev.cursorHighlight.cursorType,
+          };
+        }
+        return next;
+      });
+    };
+
     window.electronAPI.getCursorData(filePath).then((result) => {
       if (result.success && result.frames && result.frames.length > 0) {
         setCursorData(result.frames);
-
-        // Mark cursor-free recordings so the pointer always renders (no native cursor in video)
-        if (result.cursorFree) {
-          setEditorState(prev => ({
-            ...prev,
-            cursorHighlight: {
-              ...prev.cursorHighlight,
-              cursorFree: true,
-              cursorType: prev.cursorHighlight.cursorType === 'none' ? 'native' : prev.cursorHighlight.cursorType,
-            },
-          }));
-        }
+        maybeApplyEnhancements(result.frames, !!result.cursorFree);
       } else {
         setCursorData([]);
+        maybeApplyEnhancements([], false);
       }
     }).catch(() => {
       setCursorData([]);
+      maybeApplyEnhancements([], false);
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoPath]);
 
   // Initialize video segments when duration becomes available
