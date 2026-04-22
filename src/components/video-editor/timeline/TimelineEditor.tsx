@@ -26,6 +26,7 @@ import { AutoZoomPopover } from "../AutoZoomPopover";
 import { AutoSpotlightPopover } from "../AutoSpotlightPopover";
 import type { CursorFrame } from "@/lib/cursorTracker";
 import { getTotalTimelineDuration, sourceToDisplayTime, displayToSourceTime } from "@/lib/segmentUtils";
+import { isEditableTarget } from "@/lib/isEditableTarget";
 
 const VIDEO_ROW_ID = "row-video";
 const ZOOM_ROW_ID = "row-zoom";
@@ -1014,9 +1015,11 @@ export default function TimelineEditor({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
+      // Universal editable-target guard: blocks ALL shortcuts (including Tab
+      // cycling) when focus is in an input, textarea, select, or
+      // contentEditable element. Typing Tab/Delete/etc. in a text field must
+      // behave normally.
+      if (isEditableTarget(e)) return;
 
       if (e.key === 'f' || e.key === 'F') {
         addKeyframeAtPlayhead();

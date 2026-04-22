@@ -64,6 +64,7 @@ import { VideoExporter, GifExporter, type ExportProgress, type ExportQuality, ty
 import { type AspectRatio, getAspectRatioValue } from "@/utils/aspectRatioUtils";
 import { remapEditorStateForAspectRatio } from "@/lib/aspectRatioRemap";
 import { getAssetPath } from "@/lib/assetPath";
+import { isEditableTarget } from "@/lib/isEditableTarget";
 import { useUndoRedo } from "@/hooks/useUndoRedo";
 import { type EditorUndoableState, createInitialEditorState } from "./editorState";
 import { useProjectFile } from "@/hooks/useProjectFile";
@@ -1493,14 +1494,22 @@ export default function VideoEditor() {
 
   // Global Tab prevention + keyboard shortcuts
   useEffect(() => {
+    const FRAME_DURATION_S = 1 / 30; // 30fps baseline for frame stepping
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Tab') {
-        // Allow tab only in inputs/textareas
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        // Allow tab only in inputs/textareas/contentEditable
+        if (isEditableTarget(e)) {
           return;
         }
         e.preventDefault();
       }
+
+      // Block all other shortcuts when focus is in an editable field
+      // (inputs, textareas, selects, contentEditable). This prevents global
+      // shortcuts from leaking into text-entry contexts (e.g. Space in an
+      // annotation text field should type a space, not toggle play/pause).
+      if (isEditableTarget(e)) return;
 
       // Cmd+B / Ctrl+B: Split at playhead
       if ((e.key === 'b' || e.key === 'B') && (e.metaKey || e.ctrlKey)) {
@@ -1511,32 +1520,22 @@ export default function VideoEditor() {
 
       // Delete / Backspace: Remove selected segment
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSegmentId) {
-        // Don't intercept if in an input/textarea
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-          return;
-        }
         e.preventDefault();
         handleDeleteSegment(selectedSegmentId);
         return;
       }
 
-      // Razor tool shortcuts (only without modifiers, not in inputs)
+      // Razor tool shortcuts (only without modifiers)
       if ((e.key === 'c' || e.key === 'C') && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
         setRazorToolActive(true);
         return;
       }
       if ((e.key === 'v' || e.key === 'V') && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
         setRazorToolActive(false);
         return;
       }
 
       if (e.key === ' ' || e.code === 'Space') {
-        // Allow space only in inputs/textareas
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-          return;
-        }
         e.preventDefault();
 
         const playback = videoPlaybackRef.current;
@@ -1547,6 +1546,50 @@ export default function VideoEditor() {
             playback.pause();
           }
         }
+        return;
+      }
+
+      const video = videoPlaybackRef.current?.video;
+
+      // Frame nudge: ArrowLeft/Right = ±1 frame; Shift+Arrow = ±10 frames
+      if (e.key === 'ArrowLeft' && !e.metaKey && !e.ctrlKey) {
+        if (!video) return;
+        e.preventDefault();
+        const step = (e.shiftKey ? 10 : 1) * FRAME_DURATION_S;
+        video.currentTime = Math.max(0, video.currentTime - step);
+        return;
+      }
+      if (e.key === 'ArrowRight' && !e.metaKey && !e.ctrlKey) {
+        if (!video) return;
+        e.preventDefault();
+        const step = (e.shiftKey ? 10 : 1) * FRAME_DURATION_S;
+        video.currentTime = Math.min(video.duration || 0, video.currentTime + step);
+        return;
+      }
+
+      // J / K / L — NLE transport keys
+      if ((e.key === 'j' || e.key === 'J') && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        if (!video) return;
+        e.preventDefault();
+        video.currentTime = Math.max(0, video.currentTime - 1);
+        return;
+      }
+      if ((e.key === 'l' || e.key === 'L') && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        if (!video) return;
+        e.preventDefault();
+        video.currentTime = Math.min(video.duration || 0, video.currentTime + 1);
+        return;
+      }
+      if ((e.key === 'k' || e.key === 'K') && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        const playback = videoPlaybackRef.current;
+        if (!playback?.video) return;
+        e.preventDefault();
+        if (playback.video.paused) {
+          playback.play().catch(console.error);
+        } else {
+          playback.pause();
+        }
+        return;
       }
     };
 
