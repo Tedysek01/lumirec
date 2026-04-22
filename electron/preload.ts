@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     hudOverlayHide: () => {
       ipcRenderer.send('hud-overlay-hide');
     },
+    hudOverlayShow: () => {
+      ipcRenderer.send('hud-overlay-show');
+    },
     hudOverlayClose: () => {
       ipcRenderer.send('hud-overlay-close');
     },

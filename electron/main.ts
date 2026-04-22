@@ -2,7 +2,7 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, systemPreferences } from '
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { createHudOverlayWindow, createEditorWindow, createSourceSelectorWindow } from './windows'
+import { createHudOverlayWindow, createEditorWindow, createSourceSelectorWindow, showHudOverlay } from './windows'
 import { registerIpcHandlers } from './ipc/handlers'
 import { buildApplicationMenu } from './menu'
 import { initNativeRecorder } from './recording/nativeRecorder'
@@ -68,39 +68,86 @@ function getTrayIcon(filename: string) {
 }
 
 
+// Recording time tracking — performance.now() resists sleep/wake drift
+let recordingStartTimestamp: number | null = null;
+let recordingTickInterval: ReturnType<typeof setInterval> | null = null;
+
+function formatRecordingElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60).toString().padStart(2, '0');
+  const s = (totalSec % 60).toString().padStart(2, '0');
+  const h = Math.floor(totalSec / 3600);
+  return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+}
+
+function buildRecordingMenu(elapsedLabel: string): Electron.MenuItemConstructorOptions[] {
+  return [
+    {
+      label: `● Recording — ${elapsedLabel}`,
+      enabled: false,
+    },
+    {
+      label: "Stop Recording",
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("stop-recording-from-tray");
+        }
+      },
+    },
+    {
+      label: "Show HUD",
+      click: () => {
+        showHudOverlay();
+      },
+    },
+    { type: 'separator' },
+    {
+      label: "Quit",
+      click: () => {
+        app.quit();
+      },
+    },
+  ];
+}
+
+function buildIdleMenu(): Electron.MenuItemConstructorOptions[] {
+  return [
+    {
+      label: "Open",
+      click: () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.isMinimized() && mainWindow.restore();
+        } else {
+          createWindow();
+        }
+      },
+    },
+    {
+      label: "Show HUD",
+      click: () => {
+        showHudOverlay();
+      },
+    },
+    {
+      label: "Quit",
+      click: () => {
+        app.quit();
+      },
+    },
+  ];
+}
+
 function updateTrayMenu(recording: boolean = false) {
   if (!tray) return;
   const trayIcon = recording ? recordingTrayIcon : defaultTrayIcon;
-  const trayToolTip = recording ? `Recording: ${selectedSourceName}` : "Lumirec";
-  const menuTemplate = recording
-    ? [
-        {
-          label: "Stop Recording",
-          click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send("stop-recording-from-tray");
-            }
-          },
-        },
-      ]
-    : [
-        {
-          label: "Open",
-          click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.isMinimized() && mainWindow.restore();
-            } else {
-              createWindow();
-            }
-          },
-        },
-        {
-          label: "Quit",
-          click: () => {
-            app.quit();
-          },
-        },
-      ];
+  const elapsed = recording && recordingStartTimestamp !== null
+    ? performance.now() - recordingStartTimestamp
+    : 0;
+  const elapsedLabel = formatRecordingElapsed(elapsed);
+  const trayToolTip = recording
+    ? `Recording • ${elapsedLabel} • ${selectedSourceName}`
+    : "Lumirec";
+  const menuTemplate = recording ? buildRecordingMenu(elapsedLabel) : buildIdleMenu();
   tray.setImage(trayIcon);
   tray.setToolTip(trayToolTip);
   tray.setContextMenu(Menu.buildFromTemplate(menuTemplate));
@@ -170,7 +217,24 @@ app.whenReady().then(async () => {
     (recording: boolean, sourceName: string) => {
       selectedSourceName = sourceName
       if (!tray) createTray();
+
+      if (recording) {
+        recordingStartTimestamp = performance.now();
+        if (recordingTickInterval) clearInterval(recordingTickInterval);
+        // Refresh tray tooltip + menu header every second so elapsed stays live
+        recordingTickInterval = setInterval(() => {
+          updateTrayMenu(true);
+        }, 1000);
+      } else {
+        if (recordingTickInterval) {
+          clearInterval(recordingTickInterval);
+          recordingTickInterval = null;
+        }
+        recordingStartTimestamp = null;
+      }
+
       updateTrayMenu(recording);
+
       if (!recording) {
         if (mainWindow) mainWindow.restore();
       }
