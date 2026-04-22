@@ -654,7 +654,11 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         blurFilterRef.current.destroy();
         blurFilterRef.current = null;
       }
-      videoTexture.destroy(true);
+      // Destroy the texture but NOT its source. VideoSource.from(video) is
+      // cached by HTMLVideoElement identity; destroying the source poisons
+      // subsequent VideoSource.from(sameVideo) calls and the preview goes
+      // blank (e.g. after an export triggers any effect cleanup here).
+      videoTexture.destroy(false);
       
       videoSpriteRef.current = null;
     };

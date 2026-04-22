@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTimelineContext } from "dnd-timeline";
 import type { VideoSegment, SpotlightRegion } from "../types";
 import { getUniqueKeyframeTimes, getUniquePanPointTimes, getUniqueManualKeyframeTimes, getUniqueSpotlightPointTimes } from "@/lib/keyframeInterpolation";
@@ -46,6 +46,11 @@ export default function KeyframeTrack({
 }: KeyframeTrackProps) {
   const { sidebarWidth, range, valueToPixels, pixelsToValue } = useTimelineContext();
   const [draggingTime, setDraggingTime] = useState<number | null>(null);
+  // Track where the mouse went down so we can require real movement before
+  // treating the gesture as a drag. Without this, any pixel of jitter during
+  // a plain click moves the keyframe and the user never gets a clean selection.
+  const dragStartRef = useRef<{ x: number; active: boolean } | null>(null);
+  const DRAG_THRESHOLD_PX = 4;
 
   // --- Spotlight mode: render diamonds for spotlight keyframes ---
   const isSpotlightMode = filter === 'spotlight';
@@ -85,6 +90,16 @@ export default function KeyframeTrack({
     const handleMouseMove = (e: MouseEvent) => {
       if (!timelineRef.current || !onMoveKeyframesAtTime) return;
 
+      // Don't move the keyframe until the mouse has traveled past the drag
+      // threshold. Plain clicks produce 1-3px of natural jitter — without
+      // this guard every click silently shifts the keyframe a few ms.
+      const startInfo = dragStartRef.current;
+      if (startInfo && !startInfo.active) {
+        if (Math.abs(e.clientX - startInfo.x) < DRAG_THRESHOLD_PX) return;
+        startInfo.active = true;
+        document.body.style.cursor = 'ew-resize';
+      }
+
       const rect = timelineRef.current.getBoundingClientRect();
       const clickX = e.clientX - rect.left - sidebarWidth;
       const relativeMs = pixelsToValue(clickX);
@@ -100,12 +115,14 @@ export default function KeyframeTrack({
 
     const handleMouseUp = () => {
       setDraggingTime(null);
+      dragStartRef.current = null;
       document.body.style.cursor = '';
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'ew-resize';
+    // Cursor only becomes ew-resize once the drag threshold is crossed,
+    // so a plain click keeps the normal cursor.
 
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
@@ -150,6 +167,7 @@ export default function KeyframeTrack({
                     onSeek(sourceTimeMs / 1000);
                   }
                 }}
+                onClick={(e) => e.stopPropagation()}
                 title={`Spotlight point @ ${Math.round(entry.relTimeMs)}ms`}
               >
                 <div
@@ -188,14 +206,22 @@ export default function KeyframeTrack({
                 }}
                 onMouseDown={(e) => {
                   e.stopPropagation();
-                  onSelectKeyframeTime(isSelected ? null : timeMs);
-                  // Snap playhead to this keyframe's source time
-                  if (!isSelected && onSeek) {
+                  onSelectKeyframeTime(timeMs);
+                  // Always snap the playhead to the keyframe's exact source time
+                  // on mousedown. Previously this only fired on re-select, so a
+                  // click that stayed selected left the playhead on the click-X
+                  // pixel a few ms off the keyframe.
+                  if (onSeek) {
                     const sourceTimeSec = (segment.sourceStartMs + timeMs) / 1000;
                     onSeek(sourceTimeSec);
                   }
+                  dragStartRef.current = { x: e.clientX, active: false };
                   setDraggingTime(timeMs);
                 }}
+                // Swallow the click event so it doesn't bubble up and hit the
+                // Timeline's handleTimelineClick, which would clear selection
+                // and re-seek to the pixel the click landed on.
+                onClick={(e) => e.stopPropagation()}
                 onContextMenu={(e) => handleContextMenu(e, timeMs)}
                 title={`Keyframe @ ${Math.round(timeMs)}ms (drag to move, Delete to remove)`}
               >
