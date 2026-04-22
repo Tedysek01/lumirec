@@ -23,6 +23,9 @@ export interface EditorUndoableState {
   spotlightRegions: SpotlightRegion[];
   aspectRatio: AspectRatio;
   cursorHighlight: CursorHighlightConfig;
+  // True once auto-enhance has run (or when a saved project was loaded).
+  // Prevents re-application across re-renders / undo-redo.
+  enhancementsApplied: boolean;
 }
 
 export const DEFAULT_WALLPAPER = '/wallpapers/wallpaper1.jpg';
@@ -43,5 +46,6 @@ export function createInitialEditorState(wallpaper: string = DEFAULT_WALLPAPER):
     spotlightRegions: [],
     aspectRatio: '16:9',
     cursorHighlight: { ...DEFAULT_CURSOR_HIGHLIGHT_CONFIG },
+    enhancementsApplied: false,
   };
 }
