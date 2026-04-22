@@ -56,11 +56,20 @@ export function ExportDialog({
   // Determine if we're in the compiling phase (frames done but still exporting)
   const isCompiling = isExporting && progress && progress.percentage >= 100 && exportFormat === 'gif';
   const isFinalizing = progress?.phase === 'finalizing';
+  const isAudioPhase = progress?.phase === 'audio';
   const renderProgress = progress?.renderProgress;
-  
+
   // Get status message based on phase
   const getStatusMessage = () => {
     if (error) return 'Please try again';
+    if (isAudioPhase) {
+      // The native audio decoder can take a while on long recordings; give
+      // users a concrete signal that something is happening.
+      const pct = Math.round(progress?.percentage ?? 0);
+      return pct > 0
+        ? `Decoding audio... ${pct}%`
+        : 'Decoding audio... This may take a while';
+    }
     if (isCompiling || isFinalizing) {
       if (renderProgress !== undefined && renderProgress > 0) {
         return `Compiling GIF... ${renderProgress}%`;
@@ -73,6 +82,7 @@ export function ExportDialog({
   // Get title based on phase
   const getTitle = () => {
     if (error) return 'Export Failed';
+    if (isAudioPhase) return 'Preparing Audio';
     if (isCompiling || isFinalizing) return 'Compiling GIF';
     return `Exporting ${formatLabel}`;
   };
@@ -145,9 +155,20 @@ export function ExportDialog({
           <div className="space-y-6">
             <div className="space-y-2">
               <div className="flex justify-between text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                <span>{isCompiling || isFinalizing ? 'Compiling' : 'Rendering Frames'}</span>
+                <span>
+                  {isAudioPhase
+                    ? 'Preparing Audio'
+                    : isCompiling || isFinalizing
+                      ? 'Compiling'
+                      : 'Rendering Frames'}
+                </span>
                 <span className="font-mono text-foreground">
-                  {isCompiling || isFinalizing ? (
+                  {isAudioPhase ? (
+                    <span className="flex items-center gap-2">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      {progress.percentage > 0 ? `${progress.percentage.toFixed(0)}%` : 'Decoding...'}
+                    </span>
+                  ) : isCompiling || isFinalizing ? (
                     renderProgress !== undefined && renderProgress > 0 ? (
                       `${renderProgress}%`
                     ) : (
@@ -162,7 +183,23 @@ export function ExportDialog({
                 </span>
               </div>
               <div className="h-2 bg-secondary rounded-full overflow-hidden border border-border/30">
-                {isCompiling || isFinalizing ? (
+                {isAudioPhase ? (
+                  progress.percentage > 0 ? (
+                    <div
+                      className="h-full bg-primary shadow-[0_0_10px_rgba(109,213,168,0.3)] transition-all duration-300 ease-out"
+                      style={{ width: `${Math.min(progress.percentage, 100)}%` }}
+                    />
+                  ) : (
+                    <div className="h-full w-full relative overflow-hidden">
+                      <div
+                        className="absolute h-full w-1/3 bg-primary shadow-[0_0_10px_rgba(109,213,168,0.3)]"
+                        style={{
+                          animation: 'indeterminate 1.5s ease-in-out infinite',
+                        }}
+                      />
+                    </div>
+                  )
+                ) : isCompiling || isFinalizing ? (
                   // Show render progress if available, otherwise animated indeterminate bar
                   renderProgress !== undefined && renderProgress > 0 ? (
                     <div
@@ -197,16 +234,24 @@ export function ExportDialog({
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-secondary rounded-xl p-3 border border-border/30">
                 <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
-                  {isCompiling || isFinalizing ? 'Status' : 'Format'}
+                  {isAudioPhase ? 'Status' : isCompiling || isFinalizing ? 'Status' : 'Format'}
                 </div>
                 <div className="text-foreground font-medium text-sm">
-                  {isCompiling || isFinalizing ? 'Compiling...' : formatLabel}
+                  {isAudioPhase
+                    ? 'Decoding audio...'
+                    : isCompiling || isFinalizing
+                      ? 'Compiling...'
+                      : formatLabel}
                 </div>
               </div>
               <div className="bg-secondary rounded-xl p-3 border border-border/30">
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">Frames</div>
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
+                  {isAudioPhase ? 'Phase' : 'Frames'}
+                </div>
                 <div className="text-foreground font-medium text-sm">
-                  {progress.currentFrame} / {progress.totalFrames}
+                  {isAudioPhase
+                    ? 'Audio'
+                    : `${progress.currentFrame} / ${progress.totalFrames}`}
                 </div>
               </div>
             </div>
