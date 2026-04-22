@@ -10,6 +10,7 @@ import Item from "./Item";
 import VideoSegmentItem from "./VideoSegmentItem";
 import KeyframeTrack from "./KeyframeTrack";
 import TrackLabel from "./TrackLabel";
+import WaveformRow from "./WaveformRow";
 import type { Range, Span } from "dnd-timeline";
 import type { ZoomRegion, TrimRegion, AnnotationRegion, VideoSegment, SpotlightRegion } from "../types";
 import { extractThumbnails, type ThumbnailFrame } from "@/lib/thumbnailExtractor";
@@ -463,6 +464,7 @@ function Timeline({
   collapsedTracks,
   onToggleTrack,
   timelineContentRef,
+  videoPath,
 }: {
   items: TimelineRenderItem[];
   videoDurationMs: number;
@@ -489,6 +491,7 @@ function Timeline({
   collapsedTracks?: Set<string>;
   onToggleTrack?: (trackId: string) => void;
   timelineContentRef?: React.MutableRefObject<HTMLDivElement | null>;
+  videoPath?: string | null;
 }) {
   const { setTimelineRef, style, sidebarWidth, range, pixelsToValue } = useTimelineContext();
   const localTimelineRef = useRef<HTMLDivElement | null>(null);
@@ -705,9 +708,7 @@ function Timeline({
         </Row>
 
         <Row id={AUDIO_ROW_ID} height={TRACK_HEIGHTS[AUDIO_ROW_ID]} collapsed={collapsedTracks?.has(AUDIO_ROW_ID)}>
-          <div style={{ height: TRACK_HEIGHTS[AUDIO_ROW_ID], display: 'flex', alignItems: 'center', paddingLeft: 12 }}>
-            <span className="text-[10px] text-muted-foreground/50 font-medium tracking-wide uppercase select-none">Audio</span>
-          </div>
+          <WaveformRow videoPath={videoPath} height={TRACK_HEIGHTS[AUDIO_ROW_ID]} />
         </Row>
       </div>
     </div>
@@ -1369,6 +1370,7 @@ export default function TimelineEditor({
             collapsedTracks={collapsedTracks}
             onToggleTrack={toggleTrack}
             timelineContentRef={timelineContentRef}
+            videoPath={videoPath}
             videoKeyframeOverlays={videoSegments.map(segment => (
               <KeyframeTrack
                 key={`kf-manual-${segment.id}`}
