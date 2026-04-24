@@ -24,6 +24,8 @@ import {
   upsertAllPropertiesAtTime,
   removeKeyframesAtTime,
   moveKeyframesAtTime,
+  clampToPanRange,
+  syncZoomBoundaries,
 } from "@/lib/keyframeInterpolation";
 import {
   createInitialSegment,
@@ -578,15 +580,54 @@ export default function VideoEditor() {
     }));
   }, [setEditorState]);
 
-  // Move all keyframes from one time to another
+  // Move all keyframes from one time to another.
+  //
+  // When the keyframes being moved are zoom pan points (source === 'zoom'),
+  // clamp the destination time to the pan range of the containing zoom region
+  // — keeps pan points out of the t1-t2 zoom-in and t3-t4 zoom-out transition
+  // zones, which would otherwise corrupt the automatically-generated easing.
   const handleMoveKeyframesAtTime = useCallback((segmentId: string, oldTimeMs: number, newTimeMs: number) => {
     setEditorStateDebounced(prev => ({
       ...prev,
-      videoSegments: prev.videoSegments.map(s =>
-        s.id === segmentId
-          ? { ...s, keyframes: moveKeyframesAtTime(s.keyframes, oldTimeMs, newTimeMs) }
-          : s,
-      ),
+      videoSegments: prev.videoSegments.map(s => {
+        if (s.id !== segmentId) return s;
+
+        const kfsAtOldTime = s.keyframes.filter(kf => Math.abs(kf.timeMs - oldTimeMs) < 5);
+        const isPanPoint = kfsAtOldTime.some(kf => kf.source === 'zoom');
+
+        let targetTime = newTimeMs;
+        if (isPanPoint) {
+          const sourceOldTime = s.sourceStartMs + oldTimeMs;
+          const region = prev.zoomRegions.find(r =>
+            sourceOldTime >= r.startMs && sourceOldTime <= r.endMs
+          );
+          if (region) {
+            const regionRelStart = region.startMs - s.sourceStartMs;
+            const regionRelEnd = region.endMs - s.sourceStartMs;
+            const enterMs = region.enterTransition?.durationMs ?? 400;
+            const exitMs = region.exitTransition?.durationMs ?? 400;
+            targetTime = clampToPanRange(newTimeMs, regionRelStart, regionRelEnd, enterMs, exitMs);
+          }
+        }
+
+        let kfs = moveKeyframesAtTime(s.keyframes, oldTimeMs, targetTime);
+
+        // After moving a pan point, sync auto boundaries so t2/t3 match the
+        // new pan point positions and t1/t4 stay at zoom=1.
+        if (isPanPoint) {
+          const sourceOldTime = s.sourceStartMs + oldTimeMs;
+          const region = prev.zoomRegions.find(r =>
+            sourceOldTime >= r.startMs && sourceOldTime <= r.endMs
+          );
+          if (region) {
+            const regionRelStart = region.startMs - s.sourceStartMs;
+            const regionRelEnd = region.endMs - s.sourceStartMs;
+            kfs = syncZoomBoundaries(kfs, regionRelStart, regionRelEnd);
+          }
+        }
+
+        return { ...s, keyframes: kfs };
+      }),
     }));
   }, [setEditorStateDebounced]);
 
@@ -1206,8 +1247,6 @@ export default function VideoEditor() {
           onMotionBlurChange={(v) => updateState('motionBlurEnabled', v)}
           borderRadius={borderRadius}
           onBorderRadiusChange={(v) => updateStateDebounced('borderRadius', v)}
-          videoBorderRadius={videoBorderRadius}
-          onVideoBorderRadiusChange={(v) => updateStateDebounced('videoBorderRadius', v)}
           padding={padding}
           onPaddingChange={(v) => updateStateDebounced('padding', v)}
           cropRegion={cropRegion}

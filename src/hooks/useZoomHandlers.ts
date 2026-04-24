@@ -78,7 +78,8 @@ export function useZoomHandlers({
       const segRelativeStart = startMs - seg.sourceStartMs;
       const segRelativeEnd = Math.min(endMs - seg.sourceStartMs, seg.sourceEndMs - seg.sourceStartMs);
 
-      const newKeyframes = generateZoomKeyframes({
+      // Auto boundary keyframes at t1/t2/t3/t4 — zoom-in, hold, zoom-out.
+      const autoKeyframes = generateZoomKeyframes({
         startRelativeMs: segRelativeStart,
         endRelativeMs: segRelativeEnd,
         targetZoom,
@@ -86,13 +87,26 @@ export function useZoomHandlers({
         focusY: 0.5,
       });
 
+      // Also seed a user-facing pan point inside the hold zone, so the region has an
+      // immediately draggable diamond — matches the mental model where "one zoom = one anchor".
+      const midRel = (segRelativeStart + segRelativeEnd) / 2;
+      const panTime = clampToPanRange(midRel, segRelativeStart, segRelativeEnd, 400, 400);
+      let kfs = [...seg.keyframes, ...autoKeyframes];
+      kfs = upsertKeyframe(kfs, panTime, 'zoom', targetZoom, 'ease-in-out');
+      kfs = upsertKeyframe(kfs, panTime, 'focusX', 0.5, 'ease-in-out');
+      kfs = upsertKeyframe(kfs, panTime, 'focusY', 0.5, 'ease-in-out');
+      kfs = kfs.map(kf => {
+        if (Math.abs(kf.timeMs - panTime) < 5 && (kf.property === 'zoom' || kf.property === 'focusX' || kf.property === 'focusY')) {
+          return { ...kf, source: 'zoom' as const };
+        }
+        return kf;
+      });
+
       return {
         ...prev,
         zoomRegions: [...prev.zoomRegions, newRegion],
         videoSegments: prev.videoSegments.map(s =>
-          s.id === seg.id
-            ? { ...s, keyframes: [...s.keyframes, ...newKeyframes] }
-            : s
+          s.id === seg.id ? { ...s, keyframes: kfs } : s
         ),
       };
     });
@@ -336,14 +350,18 @@ export function useZoomHandlers({
         const segRelativeEnd = Math.min(seg.sourceEndMs - seg.sourceStartMs, region.endMs - seg.sourceStartMs);
 
         let updatedKeyframes = seg.keyframes.map(kf => {
-          // Only update auto-generated boundary keyframes, not user pan points
-          if (kf.source !== 'zoom-auto' || kf.property !== 'zoom') return kf;
+          // Only touch zoom-property keyframes inside this region.
+          if (kf.property !== 'zoom') return kf;
+          if (kf.source !== 'zoom-auto' && kf.source !== 'zoom') return kf;
           if (kf.timeMs < segRelativeStart - 5 || kf.timeMs > segRelativeEnd + 5) return kf;
-          // Boundary keyframes (t1/t4) stay at zoom=1
-          if (Math.abs(kf.timeMs - segRelativeStart) < 5 || Math.abs(kf.timeMs - segRelativeEnd) < 5) {
+          // t1/t4 auto boundaries stay at zoom=1 (they're the un-zoomed endpoints).
+          if (kf.source === 'zoom-auto' &&
+              (Math.abs(kf.timeMs - segRelativeStart) < 5 || Math.abs(kf.timeMs - segRelativeEnd) < 5)) {
             return kf;
           }
-          // t2/t3 get the new target zoom (may be overridden by sync below)
+          // Everything else — t2, t3, AND user pan points — gets the new depth's zoom.
+          // Without this, pan points retain the old zoom and syncZoomBoundaries snaps
+          // t2/t3 back to it, making the depth slider appear to do nothing.
           return { ...kf, value: targetZoom };
         });
 

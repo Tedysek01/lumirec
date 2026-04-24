@@ -71,8 +71,6 @@ interface SettingsPanelProps {
   onMotionBlurChange?: (enabled: boolean) => void;
   borderRadius?: number;
   onBorderRadiusChange?: (radius: number) => void;
-  videoBorderRadius?: number;
-  onVideoBorderRadiusChange?: (radius: number) => void;
   padding?: number;
   onPaddingChange?: (padding: number) => void;
   cropRegion?: CropRegion;
@@ -156,8 +154,6 @@ export function SettingsPanel({
   onMotionBlurChange, 
   borderRadius = 0,
   onBorderRadiusChange,
-  videoBorderRadius = 16,
-  onVideoBorderRadiusChange,
   padding = 50,
   onPaddingChange, 
   cropRegion, 
@@ -757,21 +753,7 @@ export function SettingsPanel({
                     value={[borderRadius]}
                     onValueChange={(values) => onBorderRadiusChange?.(values[0])}
                     min={0}
-                    max={16}
-                    step={0.5}
-                    className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
-                  />
-                </div>
-                <div className="p-2 rounded-lg bg-secondary border border-border/30">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="text-[10px] font-medium text-foreground/80">Video Corners</div>
-                    <span className="text-[10px] text-muted-foreground font-mono">{videoBorderRadius}px</span>
-                  </div>
-                  <Slider
-                    value={[videoBorderRadius]}
-                    onValueChange={(values) => onVideoBorderRadiusChange?.(values[0])}
-                    min={0}
-                    max={64}
+                    max={32}
                     step={1}
                     className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                   />

@@ -84,23 +84,72 @@ export function useSpotlightHandlers({
     }));
   }, [setEditorStateDebounced]);
 
+  // Drag-stop and resize-stop are discrete events — commit immediately.
+  // Debouncing caused Rnd's position prop to lag the visual, which felt like
+  // the spotlight "fought" the drag.
+  //
+  // Keyframe-aware: when the spotlight has animation keyframes and the playhead
+  // is inside the region, the visible widget position comes from
+  // resolveSpotlightAtTime(), not from static x/y. Updating static in that case
+  // would be ignored by the renderer and the widget would visually snap back.
+  // Instead route the drop into an upsert at the current playhead time.
   const handleSpotlightPositionChange = useCallback((id: string, position: { x: number; y: number }) => {
-    setEditorStateDebounced(prev => ({
+    setEditorState(prev => ({
       ...prev,
-      spotlightRegions: prev.spotlightRegions.map((region) =>
-        region.id === id ? { ...region, x: position.x, y: position.y } : region,
-      ),
+      spotlightRegions: prev.spotlightRegions.map((region) => {
+        if (region.id !== id) return region;
+        const hasKeyframes = (region.keyframes?.length ?? 0) > 0;
+        const playheadInside = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
+
+        if (hasKeyframes && playheadInside) {
+          const relTime = sourceTimeMs - region.startMs;
+          let kfs = region.keyframes ?? [];
+          const hasPoint = kfs.some(
+            kf => kf.source === 'spotlight' && Math.abs(kf.timeMs - relTime) < 50
+          );
+          if (!hasPoint) {
+            // Seed all four props with current interpolated values so the
+            // non-dragged axes stay where they were.
+            const current = resolveSpotlightAtTime(kfs, relTime, region);
+            kfs = upsertAllSpotlightPropertiesAtTime(kfs, relTime, current, 'ease-in-out', 'spotlight');
+          }
+          kfs = upsertSpotlightKeyframe(kfs, relTime, 'x', position.x, 'ease-in-out', 'spotlight');
+          kfs = upsertSpotlightKeyframe(kfs, relTime, 'y', position.y, 'ease-in-out', 'spotlight');
+          return { ...region, keyframes: kfs };
+        }
+
+        return { ...region, x: position.x, y: position.y };
+      }),
     }));
-  }, [setEditorStateDebounced]);
+  }, [sourceTimeMs, setEditorState]);
 
   const handleSpotlightSizeChange = useCallback((id: string, size: { width: number; height: number }) => {
-    setEditorStateDebounced(prev => ({
+    setEditorState(prev => ({
       ...prev,
-      spotlightRegions: prev.spotlightRegions.map((region) =>
-        region.id === id ? { ...region, width: size.width, height: size.height } : region,
-      ),
+      spotlightRegions: prev.spotlightRegions.map((region) => {
+        if (region.id !== id) return region;
+        const hasKeyframes = (region.keyframes?.length ?? 0) > 0;
+        const playheadInside = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
+
+        if (hasKeyframes && playheadInside) {
+          const relTime = sourceTimeMs - region.startMs;
+          let kfs = region.keyframes ?? [];
+          const hasPoint = kfs.some(
+            kf => kf.source === 'spotlight' && Math.abs(kf.timeMs - relTime) < 50
+          );
+          if (!hasPoint) {
+            const current = resolveSpotlightAtTime(kfs, relTime, region);
+            kfs = upsertAllSpotlightPropertiesAtTime(kfs, relTime, current, 'ease-in-out', 'spotlight');
+          }
+          kfs = upsertSpotlightKeyframe(kfs, relTime, 'width', size.width, 'ease-in-out', 'spotlight');
+          kfs = upsertSpotlightKeyframe(kfs, relTime, 'height', size.height, 'ease-in-out', 'spotlight');
+          return { ...region, keyframes: kfs };
+        }
+
+        return { ...region, width: size.width, height: size.height };
+      }),
     }));
-  }, [setEditorStateDebounced]);
+  }, [sourceTimeMs, setEditorState]);
 
   const handleAutoSpotlightApply = useCallback((newRegions: SpotlightRegion[], nextId: number) => {
     if (newRegions.length === 0) return;

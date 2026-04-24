@@ -16,12 +16,12 @@ export function deriveInitialEnhancements(
   input: AutoEnhanceInput,
 ): Partial<EditorUndoableState> {
   const { cursorFrames, videoDurationMs } = input;
-  // 1. Visual polish
+  // 1. Visual polish — subtle defaults. shadowIntensity is 0-1 in the UI
+  // (not 0-100), padding 50 was the original default and 80 was too much.
   const visual = {
-    padding: 80,
-    borderRadius: 24,
-    videoBorderRadius: 16,
-    shadowIntensity: 30,
+    padding: 50,
+    borderRadius: 16,
+    shadowIntensity: 0.3,
   };
   // 2. Auto-zooms from cursor data (if available)
   let zoomRegions: Partial<EditorUndoableState>['zoomRegions'];
