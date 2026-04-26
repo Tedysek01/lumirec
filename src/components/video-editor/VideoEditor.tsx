@@ -24,8 +24,6 @@ import {
   upsertAllPropertiesAtTime,
   removeKeyframesAtTime,
   moveKeyframesAtTime,
-  clampToPanRange,
-  syncZoomBoundaries,
 } from "@/lib/keyframeInterpolation";
 import {
   createInitialSegment,
@@ -582,52 +580,19 @@ export default function VideoEditor() {
 
   // Move all keyframes from one time to another.
   //
-  // When the keyframes being moved are zoom pan points (source === 'zoom'),
-  // clamp the destination time to the pan range of the containing zoom region
-  // — keeps pan points out of the t1-t2 zoom-in and t3-t4 zoom-out transition
-  // zones, which would otherwise corrupt the automatically-generated easing.
+  // A previous version clamped pan-point destination times to the zoom
+  // region's pan range here, but that desynced the caller's draggingTime
+  // (still tracking the raw mouse) from the actual keyframe time (clamped),
+  // so subsequent moves couldn't find the keyframe and the drag jammed.
+  // Clamping belongs in the drag UI itself if/when reintroduced.
   const handleMoveKeyframesAtTime = useCallback((segmentId: string, oldTimeMs: number, newTimeMs: number) => {
     setEditorStateDebounced(prev => ({
       ...prev,
-      videoSegments: prev.videoSegments.map(s => {
-        if (s.id !== segmentId) return s;
-
-        const kfsAtOldTime = s.keyframes.filter(kf => Math.abs(kf.timeMs - oldTimeMs) < 5);
-        const isPanPoint = kfsAtOldTime.some(kf => kf.source === 'zoom');
-
-        let targetTime = newTimeMs;
-        if (isPanPoint) {
-          const sourceOldTime = s.sourceStartMs + oldTimeMs;
-          const region = prev.zoomRegions.find(r =>
-            sourceOldTime >= r.startMs && sourceOldTime <= r.endMs
-          );
-          if (region) {
-            const regionRelStart = region.startMs - s.sourceStartMs;
-            const regionRelEnd = region.endMs - s.sourceStartMs;
-            const enterMs = region.enterTransition?.durationMs ?? 400;
-            const exitMs = region.exitTransition?.durationMs ?? 400;
-            targetTime = clampToPanRange(newTimeMs, regionRelStart, regionRelEnd, enterMs, exitMs);
-          }
-        }
-
-        let kfs = moveKeyframesAtTime(s.keyframes, oldTimeMs, targetTime);
-
-        // After moving a pan point, sync auto boundaries so t2/t3 match the
-        // new pan point positions and t1/t4 stay at zoom=1.
-        if (isPanPoint) {
-          const sourceOldTime = s.sourceStartMs + oldTimeMs;
-          const region = prev.zoomRegions.find(r =>
-            sourceOldTime >= r.startMs && sourceOldTime <= r.endMs
-          );
-          if (region) {
-            const regionRelStart = region.startMs - s.sourceStartMs;
-            const regionRelEnd = region.endMs - s.sourceStartMs;
-            kfs = syncZoomBoundaries(kfs, regionRelStart, regionRelEnd);
-          }
-        }
-
-        return { ...s, keyframes: kfs };
-      }),
+      videoSegments: prev.videoSegments.map(s =>
+        s.id === segmentId
+          ? { ...s, keyframes: moveKeyframesAtTime(s.keyframes, oldTimeMs, newTimeMs) }
+          : s,
+      ),
     }));
   }, [setEditorStateDebounced]);
 

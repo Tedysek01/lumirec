@@ -78,8 +78,13 @@ export function useZoomHandlers({
       const segRelativeStart = startMs - seg.sourceStartMs;
       const segRelativeEnd = Math.min(endMs - seg.sourceStartMs, seg.sourceEndMs - seg.sourceStartMs);
 
-      // Auto boundary keyframes at t1/t2/t3/t4 — zoom-in, hold, zoom-out.
-      const autoKeyframes = generateZoomKeyframes({
+      // Auto boundary keyframes only (t1/t2/t3/t4). Do NOT seed a midpoint
+      // pan point — a previous attempt did that to make the keyframe track
+      // immediately interactive, but the seeded focus=(0.5,0.5) created a
+      // second anchor that fought every later focus aim, causing the camera
+      // to drift back toward center. Pan points are created naturally when
+      // the user aims focus or changes zoom inside the region.
+      const newKeyframes = generateZoomKeyframes({
         startRelativeMs: segRelativeStart,
         endRelativeMs: segRelativeEnd,
         targetZoom,
@@ -87,26 +92,13 @@ export function useZoomHandlers({
         focusY: 0.5,
       });
 
-      // Also seed a user-facing pan point inside the hold zone, so the region has an
-      // immediately draggable diamond — matches the mental model where "one zoom = one anchor".
-      const midRel = (segRelativeStart + segRelativeEnd) / 2;
-      const panTime = clampToPanRange(midRel, segRelativeStart, segRelativeEnd, 400, 400);
-      let kfs = [...seg.keyframes, ...autoKeyframes];
-      kfs = upsertKeyframe(kfs, panTime, 'zoom', targetZoom, 'ease-in-out');
-      kfs = upsertKeyframe(kfs, panTime, 'focusX', 0.5, 'ease-in-out');
-      kfs = upsertKeyframe(kfs, panTime, 'focusY', 0.5, 'ease-in-out');
-      kfs = kfs.map(kf => {
-        if (Math.abs(kf.timeMs - panTime) < 5 && (kf.property === 'zoom' || kf.property === 'focusX' || kf.property === 'focusY')) {
-          return { ...kf, source: 'zoom' as const };
-        }
-        return kf;
-      });
-
       return {
         ...prev,
         zoomRegions: [...prev.zoomRegions, newRegion],
         videoSegments: prev.videoSegments.map(s =>
-          s.id === seg.id ? { ...s, keyframes: kfs } : s
+          s.id === seg.id
+            ? { ...s, keyframes: [...s.keyframes, ...newKeyframes] }
+            : s
         ),
       };
     });
