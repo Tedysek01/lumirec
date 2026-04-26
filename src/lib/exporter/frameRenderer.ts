@@ -412,9 +412,13 @@ export class FrameRenderer {
 
     const { width, height } = this.config;
     const { cropRegion, borderRadius = 0, videoBorderRadius, padding = 0 } = this.config;
-    // Prefer the explicit videoBorderRadius (Screen-Studio-parity video corners);
-    // fall back to legacy borderRadius so older projects keep rounding.
-    const effectiveVideoRadius = videoBorderRadius ?? borderRadius;
+    // Prefer the explicit videoBorderRadius when > 0; fall back to the
+    // legacy borderRadius (Roundness slider) otherwise. Using ?? would treat
+    // 0 as a valid override and zero out rounding for new projects whose
+    // videoBorderRadius default is 0.
+    const effectiveVideoRadius = videoBorderRadius && videoBorderRadius > 0
+      ? videoBorderRadius
+      : borderRadius;
     const videoWidth = this.config.videoWidth;
     const videoHeight = this.config.videoHeight;
 

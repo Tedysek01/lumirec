@@ -29,9 +29,13 @@ interface LayoutResult {
 
 export function layoutVideoContent(params: LayoutParams): LayoutResult | null {
   const { container, app, videoSprite, maskGraphics, videoElement, cropRegion, lockedVideoDimensions, borderRadius = 0, videoBorderRadius, padding = 0 } = params;
-  // Prefer the explicit videoBorderRadius when provided; fall back to the
-  // legacy borderRadius so older callers keep rounding the video sprite.
-  const effectiveVideoRadius = videoBorderRadius ?? borderRadius;
+  // Prefer the explicit videoBorderRadius when set to a non-zero value;
+  // fall back to the legacy borderRadius (controlled by the Roundness slider)
+  // when videoBorderRadius is 0 / unset. Using ?? here would treat 0 as a
+  // valid override and break rounding entirely once we set the default to 0.
+  const effectiveVideoRadius = videoBorderRadius && videoBorderRadius > 0
+    ? videoBorderRadius
+    : borderRadius;
 
   const videoWidth = lockedVideoDimensions?.width || videoElement.videoWidth;
   const videoHeight = lockedVideoDimensions?.height || videoElement.videoHeight;
