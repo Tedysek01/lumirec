@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     hudOverlayHide: () => {
       ipcRenderer.send('hud-overlay-hide');
     },
+    hudOverlayShow: () => {
+      ipcRenderer.send('hud-overlay-show');
+    },
     hudOverlayClose: () => {
       ipcRenderer.send('hud-overlay-close');
     },
@@ -44,6 +47,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = () => callback()
     ipcRenderer.on('stop-recording-from-tray', listener)
     return () => ipcRenderer.removeListener('stop-recording-from-tray', listener)
+  },
+  onSelectedSourceChange: (callback: (source: any) => void) => {
+    const listener = (_event: any, source: any) => callback(source)
+    ipcRenderer.on('selected-source-changed', listener)
+    return () => ipcRenderer.removeListener('selected-source-changed', listener)
   },
   openExternalUrl: (url: string) => {
     return ipcRenderer.invoke('open-external-url', url)

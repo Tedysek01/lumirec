@@ -62,8 +62,10 @@ export function CursorHighlightSettings({ config, onChange, hasCursorData }: Cur
         <p className="text-[10px] text-muted-foreground">No cursor data available for this recording.</p>
       )}
 
-      {/* Cursor type & smoothing — always visible for cursor-free recordings */}
-      {hasCursorData && (isCursorFree || config.enabled) && (
+      {/* Cursor type / size / smoothing are about the cursor ITSELF and are
+          independent from the Highlight effect (the circle/ring/spotlight
+          around it). Show them whenever we have cursor data. */}
+      {hasCursorData && (
         <>
           {/* Cursor type selector */}
           <div>

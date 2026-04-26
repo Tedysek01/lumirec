@@ -36,6 +36,8 @@ interface VideoPlaybackProps {
   showBlur?: boolean;
   motionBlurEnabled?: boolean;
   borderRadius?: number;
+  /** Corner radius (px) applied to the video sprite mask. */
+  videoBorderRadius?: number;
   padding?: number;
   cropRegion?: import('./types').CropRegion;
   trimRegions?: TrimRegion[];
@@ -83,6 +85,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   showBlur,
   motionBlurEnabled = false,
   borderRadius = 0,
+  videoBorderRadius = 16,
   padding = 50,
   cropRegion,
   trimRegions = [],
@@ -137,6 +140,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   const cursorDataRef = useRef<CursorFrame[]>([]);
   const cursorHighlightRef = useRef<CursorHighlightConfig | undefined>(undefined);
   const videoSegmentsRef = useRef<VideoSegment[]>([]);
+  // Kept in sync so the ticker can cheaply redraw the video-sprite mask when
+  // only the radius changed (no layout change needed). Guards against stale
+  // closure capture in the ticker callback.
+  const videoBorderRadiusRef = useRef(videoBorderRadius);
 
   const clampFocusToStage = useCallback((focus: ZoomFocus, depth: ZoomDepth) => {
     return clampFocusToStageUtil(focus, depth, stageSizeRef.current);
@@ -197,6 +204,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
       cropRegion,
       lockedVideoDimensions: lockedVideoDimensionsRef.current,
       borderRadius,
+      videoBorderRadius,
       padding,
     });
 
@@ -219,7 +227,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
 
       updateOverlayForRegion(activeRegion);
     }
-  }, [updateOverlayForRegion, cropRegion, borderRadius, padding]);
+  }, [updateOverlayForRegion, cropRegion, borderRadius, videoBorderRadius, padding]);
 
   useEffect(() => {
     layoutVideoContentRef.current = layoutVideoContent;
@@ -354,6 +362,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
   useEffect(() => {
     videoSegmentsRef.current = videoSegments;
   }, [videoSegments]);
+
+  useEffect(() => {
+    videoBorderRadiusRef.current = videoBorderRadius;
+  }, [videoBorderRadius]);
 
   useEffect(() => {
     cursorHighlightRef.current = cursorHighlight;
@@ -642,7 +654,11 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
         blurFilterRef.current.destroy();
         blurFilterRef.current = null;
       }
-      videoTexture.destroy(true);
+      // Destroy the texture but NOT its source. VideoSource.from(video) is
+      // cached by HTMLVideoElement identity; destroying the source poisons
+      // subsequent VideoSource.from(sameVideo) calls and the preview goes
+      // blank (e.g. after an export triggers any effect cleanup here).
+      videoTexture.destroy(false);
       
       videoSpriteRef.current = null;
     };
@@ -656,9 +672,32 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
     const videoContainer = videoContainerRef.current;
     if (!app || !videoSprite || !videoContainer) return;
 
+    // Track the last-applied mask rect/radius so we can skip the redraw when
+    // nothing changed. PixiJS masks are live Graphics — if the sprite layout
+    // shifts (aspect-ratio / padding / zoom layout) the mask must follow, so
+    // we redraw it when any of (rect, radius) change.
+    let lastMaskSig = '';
+
     const ticker = () => {
       const cameraContainer = cameraContainerRef.current;
       if (!cameraContainer) return;
+
+      // Keep the video-sprite mask in sync with sprite geometry + radius.
+      const maskGraphics = maskGraphicsRef.current;
+      const baseMask = baseMaskRef.current;
+      if (maskGraphics && baseMask.width > 0 && baseMask.height > 0) {
+        const radius = videoBorderRadiusRef.current ?? 0;
+        const maxRadius = Math.min(baseMask.width, baseMask.height) / 2;
+        const safeRadius = Math.max(0, Math.min(radius, maxRadius));
+        const sig = `${baseMask.x}|${baseMask.y}|${baseMask.width}|${baseMask.height}|${safeRadius}`;
+        if (sig !== lastMaskSig) {
+          maskGraphics.clear();
+          maskGraphics.roundRect(baseMask.x, baseMask.y, baseMask.width, baseMask.height, safeRadius);
+          maskGraphics.fill({ color: 0xffffff });
+          lastMaskSig = sig;
+        }
+      }
+
 
       const timeMs = currentTimeRef.current;
       const state = animationStateRef.current;

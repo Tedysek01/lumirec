@@ -17,6 +17,19 @@ ipcMain.on('hud-overlay-hide', () => {
   }
 });
 
+ipcMain.on('hud-overlay-show', () => {
+  showHudOverlay();
+});
+
+// Exported so the tray (main process) can restore the HUD without round-tripping IPC
+export function showHudOverlay() {
+  if (hudOverlayWindow && !hudOverlayWindow.isDestroyed()) {
+    if (hudOverlayWindow.isMinimized()) hudOverlayWindow.restore();
+    hudOverlayWindow.show();
+    hudOverlayWindow.focus();
+  }
+}
+
 export function createHudOverlayWindow(): BrowserWindow {
   const primaryDisplay = screen.getPrimaryDisplay();
   const { workArea } = primaryDisplay;

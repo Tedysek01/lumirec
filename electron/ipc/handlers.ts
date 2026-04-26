@@ -1,4 +1,4 @@
-import { ipcMain, desktopCapturer, BrowserWindow, shell, app, dialog, screen, systemPreferences } from 'electron'
+import { ipcMain, desktopCapturer, BrowserWindow, shell, app, dialog, screen, systemPreferences, webContents } from 'electron'
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -48,6 +48,11 @@ export function registerIpcHandlers(
 
   ipcMain.handle('select-source', (_, source) => {
     selectedSource = source
+    // Broadcast source change to all renderer windows (e.g. HUD) so they can
+    // react immediately instead of polling.
+    webContents.getAllWebContents().forEach((wc) => {
+      wc.send('selected-source-changed', selectedSource)
+    })
     const sourceSelectorWin = getSourceSelectorWindow()
     if (sourceSelectorWin) {
       sourceSelectorWin.close()

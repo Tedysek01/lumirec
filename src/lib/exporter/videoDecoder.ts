@@ -49,8 +49,11 @@ export class VideoFileDecoder {
 
   destroy(): void {
     if (this.videoElement) {
+      // Pause but do NOT clear src. Setting videoElement.src = '' on Chromium
+      // can aggressively tear down media pipeline state shared with other
+      // <video> elements pointing at the same file URL — including the
+      // editor preview. GC will reclaim this element on its own.
       this.videoElement.pause();
-      this.videoElement.src = '';
       this.videoElement = null;
     }
   }

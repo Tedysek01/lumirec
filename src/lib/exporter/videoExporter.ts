@@ -4,7 +4,7 @@ import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
 import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
-import { extractAudioBuffer, computeAudioRangesAfterTrim } from './audioExtractor';
+import { extractAudioBuffer, buildTrimmedAudioBuffer } from './audioExtractor';
 import { computeGapRegions } from '@/lib/segmentUtils';
 
 interface VideoExporterConfig extends ExportConfig {
@@ -16,6 +16,7 @@ interface VideoExporterConfig extends ExportConfig {
   showBlur: boolean;
   motionBlurEnabled?: boolean;
   borderRadius?: number;
+  videoBorderRadius?: number;
   padding?: number;
   videoPadding?: number;
   cropRegion: CropRegion;
@@ -109,6 +110,7 @@ export class VideoExporter {
         showBlur: this.config.showBlur,
         motionBlurEnabled: this.config.motionBlurEnabled,
         borderRadius: this.config.borderRadius,
+        videoBorderRadius: this.config.videoBorderRadius,
         padding: this.config.padding,
         cropRegion: this.config.cropRegion,
         videoWidth: videoInfo.width,
@@ -130,9 +132,17 @@ export class VideoExporter {
       const includeAudio = this.config.includeAudio ?? false;
       if (includeAudio) {
         try {
+          // Report an initial audio-phase progress update so the export
+          // dialog isn't stuck at 0% / "Rendering frames" while the native
+          // decoder churns through long recordings.
+          this.reportAudioProgress(0);
           const response = await fetch(this.config.videoUrl);
           const blob = await response.blob();
-          sourceAudioBuffer = await extractAudioBuffer(blob);
+          sourceAudioBuffer = await extractAudioBuffer(blob, (p) => {
+            // Map the decode stage to the first 80% of the audio phase; the
+            // remaining 20% is reserved for trimming + encoding.
+            this.reportAudioProgress(p.ratio * 0.8);
+          });
           if (sourceAudioBuffer) {
             console.log('[VideoExporter] Audio track detected:', sourceAudioBuffer.numberOfChannels, 'ch,', sourceAudioBuffer.sampleRate, 'Hz');
           }
@@ -384,36 +394,17 @@ export class VideoExporter {
     const sampleRate = audioBuffer.sampleRate;
     const channels = audioBuffer.numberOfChannels;
 
-    // Compute which sample ranges to include (after trim)
-    const ranges = computeAudioRangesAfterTrim(
-      audioBuffer.length,
-      sampleRate,
+    // Build the trimmed audio buffer via the chunked helper, which yields to
+    // the event loop periodically so the UI stays responsive for long inputs.
+    const trimmedBuffer = await buildTrimmedAudioBuffer(
+      audioBuffer,
       this.config.trimRegions || [],
+      (p) => {
+        // Trimming occupies 80-90% of the audio phase (decode took 0-80%).
+        this.reportAudioProgress(0.8 + p.ratio * 0.1);
+      },
     );
-
-    // Compute total samples after trim
-    const totalSamples = ranges.reduce((sum, [start, end]) => sum + (end - start), 0);
-    if (totalSamples === 0) return;
-
-    // Create trimmed audio buffer
-    const offlineCtx = new OfflineAudioContext(channels, totalSamples, sampleRate);
-    let offset = 0;
-    for (const [start, end] of ranges) {
-      const length = end - start;
-      const tempBuffer = offlineCtx.createBuffer(channels, length, sampleRate);
-      for (let ch = 0; ch < channels; ch++) {
-        const srcData = audioBuffer.getChannelData(ch);
-        const dstData = tempBuffer.getChannelData(ch);
-        dstData.set(srcData.subarray(start, end));
-      }
-      const source = offlineCtx.createBufferSource();
-      source.buffer = tempBuffer;
-      source.connect(offlineCtx.destination);
-      source.start(offset / sampleRate);
-      offset += length;
-    }
-
-    const trimmedBuffer = await offlineCtx.startRendering();
+    if (!trimmedBuffer) return;
 
     // Encode using AudioEncoder (AAC for universal MP4 compatibility)
     const audioPromises: Promise<void>[] = [];
@@ -457,10 +448,13 @@ export class VideoExporter {
       bitrate: 128_000,
     });
 
-    // Feed audio data in 1024-sample frames (standard AAC frame size)
+    // Feed audio data in 1024-sample frames (standard AAC frame size).
+    // The loop yields to the event loop every ~100k samples so feeding a long
+    // recording doesn't monopolise the main thread.
     const chunkSize = 1024;
     const totalAudioSamples = trimmedBuffer.length;
     let sampleOffset = 0;
+    let samplesSinceYield = 0;
 
     while (sampleOffset < totalAudioSamples) {
       const remaining = totalAudioSamples - sampleOffset;
@@ -488,6 +482,15 @@ export class VideoExporter {
       audioEncoder.encode(audioData);
       audioData.close();
       sampleOffset += frameSamples;
+      samplesSinceYield += frameSamples;
+
+      if (samplesSinceYield >= 100_000) {
+        samplesSinceYield = 0;
+        // Remaining 10% of the audio phase is spent on the AAC encode feed.
+        const encodeRatio = sampleOffset / totalAudioSamples;
+        this.reportAudioProgress(0.9 + encodeRatio * 0.1);
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
     }
 
     await audioEncoder.flush();
@@ -495,6 +498,23 @@ export class VideoExporter {
     await Promise.all(audioPromises);
 
     console.log('[VideoExporter] Audio encoding complete');
+  }
+
+  /**
+   * Report progress for the audio phase of export. The dialog uses the
+   * `phase: 'audio'` hint to show "Decoding audio…" so long recordings don't
+   * look frozen at 0% while the native audio decoder runs.
+   */
+  private reportAudioProgress(ratio: number): void {
+    if (!this.config.onProgress) return;
+    const clamped = Math.max(0, Math.min(1, ratio));
+    this.config.onProgress({
+      currentFrame: 0,
+      totalFrames: 0,
+      percentage: clamped * 100,
+      estimatedTimeRemaining: 0,
+      phase: 'audio',
+    });
   }
 
   cancel(): void {

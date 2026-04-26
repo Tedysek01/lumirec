@@ -3,6 +3,7 @@ import { LaunchWindow } from "./components/launch/LaunchWindow";
 import { SourceSelector } from "./components/launch/SourceSelector";
 import VideoEditor from "./components/video-editor/VideoEditor";
 import { loadAllCustomFonts } from "./lib/customFonts";
+import { Toaster } from "@/components/ui/sonner";
 
 export default function App() {
   const [windowType, setWindowType] = useState('');
@@ -44,6 +45,7 @@ export default function App() {
             );
         }
       })()}
+      <Toaster />
     </>
   );
 }

@@ -152,9 +152,9 @@ export function SettingsPanel({
   onBlurChange, 
   motionBlurEnabled = false,
   onMotionBlurChange, 
-  borderRadius = 0, 
-  onBorderRadiusChange, 
-  padding = 50, 
+  borderRadius = 0,
+  onBorderRadiusChange,
+  padding = 50,
   onPaddingChange, 
   cropRegion, 
   onCropChange, 
@@ -753,8 +753,8 @@ export function SettingsPanel({
                     value={[borderRadius]}
                     onValueChange={(values) => onBorderRadiusChange?.(values[0])}
                     min={0}
-                    max={16}
-                    step={0.5}
+                    max={32}
+                    step={1}
                     className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                   />
                 </div>

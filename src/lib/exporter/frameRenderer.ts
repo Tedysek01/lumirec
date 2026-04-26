@@ -19,6 +19,7 @@ interface FrameRenderConfig {
   showBlur: boolean;
   motionBlurEnabled?: boolean;
   borderRadius?: number;
+  videoBorderRadius?: number;
   padding?: number;
   cropRegion: CropRegion;
   videoWidth: number;
@@ -410,7 +411,10 @@ export class FrameRenderer {
     if (!this.app || !this.videoSprite || !this.maskGraphics || !this.videoContainer) return;
 
     const { width, height } = this.config;
-    const { cropRegion, borderRadius = 0, padding = 0 } = this.config;
+    const { cropRegion, borderRadius = 0, videoBorderRadius, padding = 0 } = this.config;
+    // Prefer the explicit videoBorderRadius (Screen-Studio-parity video corners);
+    // fall back to legacy borderRadius so older projects keep rounding.
+    const effectiveVideoRadius = videoBorderRadius ?? borderRadius;
     const videoWidth = this.config.videoWidth;
     const videoHeight = this.config.videoHeight;
 
@@ -447,14 +451,18 @@ export class FrameRenderer {
     this.videoContainer.x = centerOffsetX;
     this.videoContainer.y = centerOffsetY;
 
-    // scale border radius by export/preview canvas ratio
+    // scale border radius by export/preview canvas ratio so the exported
+    // rounded video corners look identical to what the user sees in the
+    // preview (which runs at a smaller canvas).
     const previewWidth = this.config.previewWidth || 1920;
     const previewHeight = this.config.previewHeight || 1080;
     const canvasScaleFactor = Math.min(width / previewWidth, height / previewHeight);
-    const scaledBorderRadius = borderRadius * canvasScaleFactor;
-    
+    const scaledBorderRadius = effectiveVideoRadius * canvasScaleFactor;
+    const maxRadius = Math.min(croppedDisplayWidth, croppedDisplayHeight) / 2;
+    const safeRadius = Math.max(0, Math.min(scaledBorderRadius, maxRadius));
+
     this.maskGraphics.clear();
-    this.maskGraphics.roundRect(0, 0, croppedDisplayWidth, croppedDisplayHeight, scaledBorderRadius);
+    this.maskGraphics.roundRect(0, 0, croppedDisplayWidth, croppedDisplayHeight, safeRadius);
     this.maskGraphics.fill({ color: 0xffffff });
 
     // Cache layout info
