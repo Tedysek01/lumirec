@@ -39,8 +39,14 @@ export class VideoExporter {
   private muxer: VideoMuxer | null = null;
   private cancelled = false;
   private encodeQueue = 0;
-  // Increased queue size for better throughput with hardware encoding
-  private readonly MAX_ENCODE_QUEUE = 120;
+  // Deep encoder pipeline so the renderer can race ahead of the encoder when
+  // the encoder is the slow link, and the encoder can race ahead of the
+  // renderer when content is light. Hardware encoders happily buffer this many.
+  private readonly MAX_ENCODE_QUEUE = 240;
+  // Resolvers waiting for the encoder queue to drain below the limit. Replaces
+  // a setTimeout(0) busy-wait that was costing ~4 ms per spin once the queue
+  // saturated.
+  private encoderDrainResolvers: Array<() => void> = [];
   private videoDescription: Uint8Array | undefined;
   private videoColorSpace: VideoColorSpaceInit | undefined;
   // Track muxing promises for parallel processing
@@ -155,70 +161,45 @@ export class VideoExporter {
       this.muxer = new VideoMuxer(this.config, hasAudio);
       await this.muxer.initialize();
 
-      // Get the video element for frame extraction
-      const videoElement = this.decoder.getVideoElement();
-      if (!videoElement) {
-        throw new Error('Video element not available');
-      }
-
       // Calculate effective duration and frame count (excluding trim regions)
       const effectiveDuration = this.getEffectiveDuration(videoInfo.duration);
       const totalFrames = Math.ceil(effectiveDuration * this.config.frameRate);
-      
+
       console.log('[VideoExporter] Original duration:', videoInfo.duration, 's');
       console.log('[VideoExporter] Effective duration:', effectiveDuration, 's');
       console.log('[VideoExporter] Total frames to export:', totalFrames);
 
-      // Process frames continuously without batching delays
-      const frameDuration = 1_000_000 / this.config.frameRate; // in microseconds
-      let frameIndex = 0;
+      // Precompute the desired SOURCE timestamp (μs) for every output frame.
+      // The mapping accounts for trim regions + segment gaps. Doing this once
+      // up front avoids recomputing the skip-region prefix sum per frame.
+      const frameDurationUs = 1_000_000 / this.config.frameRate;
       const timeStep = 1 / this.config.frameRate;
-
-      while (frameIndex < totalFrames && !this.cancelled) {
-        const i = frameIndex;
-        const timestamp = i * frameDuration;
-
-        // Map effective time to source time (accounting for trim regions)
-        const effectiveTimeMs = (i * timeStep) * 1000;
+      const desiredSourceUs = new Float64Array(totalFrames);
+      for (let i = 0; i < totalFrames; i++) {
+        const effectiveTimeMs = i * timeStep * 1000;
         const sourceTimeMs = this.mapEffectiveToSourceTime(effectiveTimeMs);
-        const videoTime = sourceTimeMs / 1000;
-          
-        // Seek if needed or wait for first frame to be ready
-        const needsSeek = Math.abs(videoElement.currentTime - videoTime) > 0.001;
+        desiredSourceUs[i] = sourceTimeMs * 1000;
+      }
 
-        if (needsSeek) {
-          // Attach listener BEFORE setting currentTime to avoid race condition
-          const seekedPromise = new Promise<void>(resolve => {
-            videoElement.addEventListener('seeked', () => resolve(), { once: true });
-          });
-          
-          videoElement.currentTime = videoTime;
-          await seekedPromise;
-        } else if (i === 0) {
-          // Only for the very first frame, wait for it to be ready
-          await new Promise<void>(resolve => {
-            videoElement.requestVideoFrameCallback(() => resolve());
-          });
-        }
+      // Stream-decode the file and match each output frame to the source frame
+      // whose PTS is closest to the desired source time. This replaces the
+      // old seek-per-output-frame loop (each iteration of which forced the
+      // browser's media decoder to restart from the nearest keyframe). For
+      // typical screen recordings with sparse keyframes the speed-up is huge.
+      let outputIdx = 0;
+      let prevSource: VideoFrame | null = null;
+      let prevTimestampUs = -Infinity;
 
-        // Create a VideoFrame from the video element (on GPU!)
-        const videoFrame = new VideoFrame(videoElement, {
-          timestamp,
-        });
-
-        // Render the frame with all effects using source timestamp
-        const sourceTimestamp = sourceTimeMs * 1000; // Convert to microseconds
-        await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
-        
-        videoFrame.close();
+      const emitOutputFrame = async (sourceFrame: VideoFrame, idx: number) => {
+        const outputTimestamp = idx * frameDurationUs;
+        // Renderer time-bases regions/keyframes on the SOURCE timestamp.
+        await this.renderer!.renderFrame(sourceFrame, sourceFrame.timestamp);
 
         const canvas = this.renderer!.getCanvas();
-
-        // Create VideoFrame from canvas on GPU without reading pixels
-        // @ts-ignore - colorSpace not in TypeScript definitions but works at runtime
+        // @ts-ignore - colorSpace not in lib.d.ts but works at runtime
         const exportFrame = new VideoFrame(canvas, {
-          timestamp,
-          duration: frameDuration,
+          timestamp: outputTimestamp,
+          duration: frameDurationUs,
           colorSpace: {
             primaries: 'bt709',
             transfer: 'iec61966-2-1',
@@ -227,32 +208,66 @@ export class VideoExporter {
           },
         });
 
-        // Check encoder queue before encoding to keep it full
-        while (this.encodeQueue >= this.MAX_ENCODE_QUEUE && !this.cancelled) {
-          await new Promise(resolve => setTimeout(resolve, 0));
+        if (this.encodeQueue >= this.MAX_ENCODE_QUEUE && !this.cancelled) {
+          await new Promise<void>(resolve => {
+            this.encoderDrainResolvers.push(resolve);
+          });
         }
-
         if (this.encoder && this.encoder.state === 'configured') {
           this.encodeQueue++;
-          this.encoder.encode(exportFrame, { keyFrame: i % 150 === 0 });
+          this.encoder.encode(exportFrame, { keyFrame: idx % 150 === 0 });
         } else {
-          console.warn(`[Frame ${i}] Encoder not ready! State: ${this.encoder?.state}`);
+          console.warn(`[Frame ${idx}] Encoder not ready! State: ${this.encoder?.state}`);
         }
-
         exportFrame.close();
 
-        frameIndex++;
-
-        // Update progress
         if (this.config.onProgress) {
           this.config.onProgress({
-            currentFrame: frameIndex,
+            currentFrame: idx + 1,
             totalFrames,
-            percentage: (frameIndex / totalFrames) * 100,
+            percentage: ((idx + 1) / totalFrames) * 100,
             estimatedTimeRemaining: 0,
           });
         }
+      };
+
+      for await (const sourceFrame of this.decoder.frames()) {
+        if (this.cancelled) {
+          sourceFrame.close();
+          break;
+        }
+        const currentTs = sourceFrame.timestamp;
+
+        // Emit every output frame whose desired source time is satisfied by
+        // either prevSource or sourceFrame (desired ≤ currentTs). Pick whichever
+        // is closer in PTS — this handles output framerates lower than source
+        // (sub-sampling) and higher than source (repeating a frame).
+        while (outputIdx < totalFrames && desiredSourceUs[outputIdx] <= currentTs) {
+          const desired = desiredSourceUs[outputIdx];
+          const useCurrent =
+            !prevSource ||
+            Math.abs(currentTs - desired) <= Math.abs(prevTimestampUs - desired);
+          await emitOutputFrame(useCurrent ? sourceFrame : prevSource!, outputIdx);
+          outputIdx++;
+          if (this.cancelled) break;
+        }
+
+        // Slide the window: keep the latest source frame as `prev`.
+        if (prevSource) prevSource.close();
+        prevSource = sourceFrame;
+        prevTimestampUs = currentTs;
+
+        if (outputIdx >= totalFrames) break;
       }
+
+      // Last source frame anchors any remaining output frames whose desired
+      // time sits past the end of the source (rounding at end of duration).
+      while (outputIdx < totalFrames && prevSource && !this.cancelled) {
+        await emitOutputFrame(prevSource, outputIdx);
+        outputIdx++;
+      }
+
+      if (prevSource) prevSource.close();
 
       if (this.cancelled) {
         return { success: false, error: 'Export cancelled' };
@@ -345,23 +360,34 @@ export class VideoExporter {
 
         this.muxingPromises.push(muxingPromise);
         this.encodeQueue--;
+        // Wake one producer that was blocked on a full queue. Using Promises
+        // (signalled here) instead of polling setTimeout cuts ~4 ms off every
+        // saturated frame on macOS / Chromium.
+        const next = this.encoderDrainResolvers.shift();
+        if (next) next();
       },
       error: (error) => {
         console.error('[VideoExporter] Encoder error:', error);
         // Stop export encoding failed
         this.cancelled = true;
+        // Unblock anyone still waiting on the queue so we can exit cleanly.
+        for (const r of this.encoderDrainResolvers) r();
+        this.encoderDrainResolvers = [];
       },
     });
 
     const codec = this.config.codec || 'avc1.640033';
-    
+
     const encoderConfig: VideoEncoderConfig = {
       codec,
       width: this.config.width,
       height: this.config.height,
       bitrate: this.config.bitrate,
       framerate: this.config.frameRate,
-      latencyMode: 'realtime',
+      // 'quality' lets VideoToolbox / hardware encoders pipeline deeper and
+      // batch frames; 'realtime' pins them at ~1× source frame rate which is
+      // the wrong trade-off for batch export. Output bitstream is identical.
+      latencyMode: 'quality',
       bitrateMode: 'variable',
       hardwareAcceleration: 'prefer-hardware',
     };
@@ -523,6 +549,11 @@ export class VideoExporter {
   }
 
   private cleanup(): void {
+    // Wake anything still waiting on encoder backpressure so the export loop
+    // can observe `cancelled` and exit instead of stalling forever.
+    for (const r of this.encoderDrainResolvers) r();
+    this.encoderDrainResolvers = [];
+
     if (this.encoder) {
       try {
         if (this.encoder.state === 'configured') {

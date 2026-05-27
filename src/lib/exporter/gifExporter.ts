@@ -171,16 +171,10 @@ export class GifExporter {
         dither: 'FloydSteinberg',
       });
 
-      // Get the video element for frame extraction
-      const videoElement = this.decoder.getVideoElement();
-      if (!videoElement) {
-        throw new Error('Video element not available');
-      }
-
       // Calculate effective duration and frame count (excluding trim regions)
       const effectiveDuration = this.getEffectiveDuration(videoInfo.duration);
       const totalFrames = Math.ceil(effectiveDuration * this.config.frameRate);
-      
+
       // Calculate frame delay in milliseconds (gif.js uses ms)
       const frameDelay = Math.round(1000 / this.config.frameRate);
 
@@ -191,65 +185,66 @@ export class GifExporter {
       console.log('[GifExporter] Frame delay:', frameDelay, 'ms');
       console.log('[GifExporter] Loop:', this.config.loop ? 'infinite' : 'once');
 
-      // Process frames
+      // Precompute desired SOURCE timestamp (μs) for each output frame; same
+      // streaming-consumer pattern as VideoExporter, just with `gif.addFrame`
+      // instead of an encoder. Yields a big speedup on screen recordings
+      // because we avoid the seek-per-output-frame loop.
       const timeStep = 1 / this.config.frameRate;
-      let frameIndex = 0;
-
-      while (frameIndex < totalFrames && !this.cancelled) {
-        const i = frameIndex;
-        const timestamp = i * (1_000_000 / this.config.frameRate); // in microseconds
-
-        // Map effective time to source time (accounting for trim regions)
-        const effectiveTimeMs = (i * timeStep) * 1000;
+      const desiredSourceUs = new Float64Array(totalFrames);
+      for (let i = 0; i < totalFrames; i++) {
+        const effectiveTimeMs = i * timeStep * 1000;
         const sourceTimeMs = this.mapEffectiveToSourceTime(effectiveTimeMs);
-        const videoTime = sourceTimeMs / 1000;
+        desiredSourceUs[i] = sourceTimeMs * 1000;
+      }
 
-        // Seek if needed
-        const needsSeek = Math.abs(videoElement.currentTime - videoTime) > 0.001;
-
-        if (needsSeek) {
-          const seekedPromise = new Promise<void>(resolve => {
-            videoElement.addEventListener('seeked', () => resolve(), { once: true });
-          });
-          
-          videoElement.currentTime = videoTime;
-          await seekedPromise;
-        } else if (i === 0) {
-          // Only for the very first frame, wait for it to be ready
-          await new Promise<void>(resolve => {
-            videoElement.requestVideoFrameCallback(() => resolve());
-          });
-        }
-
-        // Create a VideoFrame from the video element
-        const videoFrame = new VideoFrame(videoElement, {
-          timestamp,
-        });
-
-        // Render the frame with all effects using source timestamp
-        const sourceTimestamp = sourceTimeMs * 1000; // Convert to microseconds
-        await this.renderer!.renderFrame(videoFrame, sourceTimestamp);
-        
-        videoFrame.close();
-
-        // Get the rendered canvas and add to GIF
+      const emitOutputFrame = async (sourceFrame: VideoFrame, idx: number) => {
+        await this.renderer!.renderFrame(sourceFrame, sourceFrame.timestamp);
         const canvas = this.renderer!.getCanvas();
-        
-        // Add frame to GIF encoder with delay
         this.gif!.addFrame(canvas, { delay: frameDelay, copy: true });
-
-        frameIndex++;
-
-        // Update progress
         if (this.config.onProgress) {
           this.config.onProgress({
-            currentFrame: frameIndex,
+            currentFrame: idx + 1,
             totalFrames,
-            percentage: (frameIndex / totalFrames) * 100,
+            percentage: ((idx + 1) / totalFrames) * 100,
             estimatedTimeRemaining: 0,
           });
         }
+      };
+
+      let outputIdx = 0;
+      let prevSource: VideoFrame | null = null;
+      let prevTimestampUs = -Infinity;
+
+      for await (const sourceFrame of this.decoder.frames()) {
+        if (this.cancelled) {
+          sourceFrame.close();
+          break;
+        }
+        const currentTs = sourceFrame.timestamp;
+
+        while (outputIdx < totalFrames && desiredSourceUs[outputIdx] <= currentTs) {
+          const desired = desiredSourceUs[outputIdx];
+          const useCurrent =
+            !prevSource ||
+            Math.abs(currentTs - desired) <= Math.abs(prevTimestampUs - desired);
+          await emitOutputFrame(useCurrent ? sourceFrame : prevSource!, outputIdx);
+          outputIdx++;
+          if (this.cancelled) break;
+        }
+
+        if (prevSource) prevSource.close();
+        prevSource = sourceFrame;
+        prevTimestampUs = currentTs;
+
+        if (outputIdx >= totalFrames) break;
       }
+
+      while (outputIdx < totalFrames && prevSource && !this.cancelled) {
+        await emitOutputFrame(prevSource, outputIdx);
+        outputIdx++;
+      }
+
+      if (prevSource) prevSource.close();
 
       if (this.cancelled) {
         return { success: false, error: 'Export cancelled' };
