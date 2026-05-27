@@ -963,8 +963,39 @@ export default function VideoEditor() {
       // This fixes the bug where second export doesn't show save dialog
       setShowExportDialog(false);
       setExportProgress(null);
+      refreshEditorPreviewFrame();
     }
   }, [videoPath, wallpaper, trimRegions, shadowIntensity, showBlur, motionBlurEnabled, borderRadius, videoBorderRadius, padding, cropRegion, annotationRegions, spotlightRegions, isPlaying, aspectRatio, exportQuality, cursorData, cursorHighlight, videoSegments]);
+
+  // Pixi's VideoSource only uploads a new GPU frame on play/seeked events while
+  // the source video is paused. Heavy decode/encode + GPU memory pressure
+  // during export can leave the editor video's decoded frame buffer empty, so
+  // the preview ends up rendering an empty texture (timeline + wallpaper
+  // visible, video gone). Force a real re-decode by seeking ~50 ms away from
+  // the current position and back — both 'seeked' events run Pixi's
+  // _onSeeked → updateFrame, which re-uploads the frame to the GPU. 1 ms was
+  // too small and Chromium would sometimes optimise the seek away entirely.
+  const refreshEditorPreviewFrame = () => {
+    const video = videoPlaybackRef.current?.video;
+    if (!video) return;
+    const t = video.currentTime;
+    if (!Number.isFinite(t)) return;
+    const duration = video.duration;
+    const epsilon = 0.05;
+    const canForward = Number.isFinite(duration) && t + epsilon < duration;
+    const intermediate = canForward ? t + epsilon : Math.max(0, t - epsilon);
+    if (intermediate === t) return;
+
+    const restore = () => {
+      video.removeEventListener('seeked', restore);
+      // Snap back to the original cursor position; the second 'seeked' here
+      // triggers another Pixi GPU upload, so even if the first upload landed
+      // on an empty frame the second one catches the real pixels.
+      video.currentTime = t;
+    };
+    video.addEventListener('seeked', restore);
+    video.currentTime = intermediate;
+  };
 
   const handleOpenExportDialog = useCallback(() => {
     if (!videoPath) {
@@ -1010,6 +1041,7 @@ export default function VideoEditor() {
       setIsExporting(false);
       setExportProgress(null);
       setExportError(null);
+      refreshEditorPreviewFrame();
     }
   }, []);
 
