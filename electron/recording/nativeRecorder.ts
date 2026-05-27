@@ -43,19 +43,29 @@ export function isNativeRecorderAvailable(): boolean {
 }
 
 export interface NativeRecordingOptions {
-  displayId: string  // From ProcessedDesktopSource.display_id
+  displayId?: string  // From ProcessedDesktopSource.display_id (screen capture)
+  windowId?: string   // CGWindowID parsed from desktopCapturer source.id (window capture)
   micDeviceId?: string
   micEnabled?: boolean
   frameRate?: number
 }
 
+export interface NativeRecordingResult {
+  path: string
+  // Window bounds (global screen coords) when recording a window, so the renderer
+  // can normalize cursor coordinates against the captured area instead of the
+  // primary display.
+  bounds?: { x: number; y: number; width: number; height: number }
+}
+
 /**
  * Start a cursor-free native recording.
- * @returns The output file path of the recording.
+ * Pass `windowId` to capture a single window, or `displayId` for a whole display.
+ * If both are provided, `windowId` wins (node-mac-recorder will derive the display).
  */
 export async function startNativeRecording(
   options: NativeRecordingOptions
-): Promise<string> {
+): Promise<NativeRecordingResult> {
   if (!available || !recorderInstance) {
     throw new Error('Native recorder is not available')
   }
@@ -63,11 +73,28 @@ export async function startNativeRecording(
   const timestamp = Date.now()
   const outputPath = path.join(RECORDINGS_DIR, `recording-${timestamp}.mov`)
 
-  // Convert Electron display_id string to numeric ID for node-mac-recorder
-  const numericDisplayId = options.displayId ? parseInt(options.displayId, 10) : null
+  const numericDisplayId = options.displayId ? parseInt(options.displayId, 10) : NaN
+  const numericWindowId = options.windowId ? parseInt(options.windowId, 10) : NaN
+  const useWindow = Number.isFinite(numericWindowId)
+
+  let bounds: NativeRecordingResult['bounds']
+  if (useWindow) {
+    try {
+      const windows = await recorderInstance.getWindows()
+      const win = windows.find((w: any) => w.id === numericWindowId)
+      if (win) {
+        bounds = { x: win.x, y: win.y, width: win.width, height: win.height }
+      }
+    } catch (err) {
+      console.warn('Native recorder: failed to resolve window bounds -', (err as Error).message)
+    }
+  }
 
   await recorderInstance.startRecording(outputPath, {
-    displayId: Number.isFinite(numericDisplayId) ? numericDisplayId : null,
+    // For window capture, leave displayId null — node-mac-recorder derives it
+    // from the window's location. Passing both can mis-target the recording.
+    displayId: useWindow ? null : (Number.isFinite(numericDisplayId) ? numericDisplayId : null),
+    windowId: useWindow ? numericWindowId : null,
     captureCursor: false,
     quality: 'high',
     frameRate: options.frameRate ?? 60,
@@ -76,7 +103,7 @@ export async function startNativeRecording(
     includeSystemAudio: false,
   })
 
-  return outputPath
+  return { path: outputPath, bounds }
 }
 
 /**

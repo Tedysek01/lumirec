@@ -94,7 +94,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   nativeRecorderAvailable: () => {
     return ipcRenderer.invoke('native-recorder-available')
   },
-  startNativeRecording: (options: { displayId: string; micDeviceId?: string; micEnabled?: boolean }) => {
+  startNativeRecording: (options: { displayId?: string; windowId?: string; micDeviceId?: string; micEnabled?: boolean }) => {
     return ipcRenderer.invoke('start-native-recording', options)
   },
   stopNativeRecording: () => {

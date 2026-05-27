@@ -47,7 +47,7 @@ interface Window {
     hudOverlayClose: () => void;
     // Native recorder (cursor-free ScreenCaptureKit)
     nativeRecorderAvailable: () => Promise<boolean>
-    startNativeRecording: (options: { displayId: string; micDeviceId?: string; micEnabled?: boolean }) => Promise<{ success: boolean; path?: string; error?: string }>
+    startNativeRecording: (options: { displayId?: string; windowId?: string; micDeviceId?: string; micEnabled?: boolean }) => Promise<{ success: boolean; path?: string; bounds?: { x: number; y: number; width: number; height: number }; error?: string }>
     stopNativeRecording: () => Promise<{ success: boolean; path?: string; error?: string }>
     // Cursor tracking
     startCursorTracking: (sourceBounds?: { x: number; y: number; width: number; height: number }) => Promise<{ success: boolean }>

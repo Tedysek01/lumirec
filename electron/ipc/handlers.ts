@@ -341,14 +341,15 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('start-native-recording', async (_, options: {
-    displayId: string
+    displayId?: string
+    windowId?: string
     micDeviceId?: string
     micEnabled?: boolean
   }) => {
     try {
-      const outputPath = await startNativeRecording(options)
-      currentVideoPath = outputPath
-      return { success: true, path: outputPath }
+      const result = await startNativeRecording(options)
+      currentVideoPath = result.path
+      return { success: true, path: result.path, bounds: result.bounds }
     } catch (error) {
       console.error('Failed to start native recording:', error)
       return { success: false, error: String(error) }

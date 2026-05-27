@@ -136,8 +136,15 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
   async function startNativeRecordingPath(selectedSource: any) {
     isNativeRecording.current = true;
 
+    // Electron desktopCapturer source.id is "window:<CGWindowID>:0" or "screen:<id>:0".
+    // For windows we must pass windowId so ScreenCaptureKit records the window
+    // instead of the whole display it sits on.
+    const isWindow = typeof selectedSource.id === 'string' && selectedSource.id.startsWith('window:');
+    const windowId = isWindow ? selectedSource.id.split(':')[1] : undefined;
+
     const result = await window.electronAPI.startNativeRecording({
-      displayId: selectedSource.display_id,
+      displayId: isWindow ? undefined : selectedSource.display_id,
+      windowId,
       micDeviceId: audioConfig?.micDeviceId,
       micEnabled: audioConfig?.micEnabled ?? false,
     });
@@ -150,8 +157,11 @@ export function useScreenRecorder(audioConfig?: AudioConfig): UseScreenRecorderR
     setRecording(true);
     window.electronAPI?.setRecordingState(true);
 
-    // Start cursor tracking in parallel
-    window.electronAPI?.startCursorTracking().catch((err: unknown) => {
+    // Cursor coords need to be normalized against whatever area was actually
+    // captured. For a window, that's the window's screen rect (returned by the
+    // recorder). For full-screen, omit bounds and let the main process default
+    // to the primary display.
+    window.electronAPI?.startCursorTracking(result.bounds).catch((err: unknown) => {
       console.warn('Failed to start cursor tracking:', err);
     });
   }
