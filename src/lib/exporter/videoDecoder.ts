@@ -21,6 +21,12 @@ import {
   type Movie,
   type Sample,
 } from 'mp4box';
+import {
+  ALL_FORMATS,
+  BlobSource,
+  Input,
+  VideoSampleSink,
+} from 'mediabunny';
 
 export interface DecodedVideoInfo {
   width: number;
@@ -31,6 +37,18 @@ export interface DecodedVideoInfo {
   frameRate: number;
   /** WebCodecs-style codec string (e.g. "avc1.640033"). */
   codec: string;
+}
+
+export type DecoderKind = 'mp4box' | 'mediabunny' | 'seek';
+
+export function getDecoderPlanForUrl(videoUrl: string): DecoderKind[] {
+  const urlWithoutQuery = videoUrl.split(/[?#]/, 1)[0].toLowerCase();
+
+  if (urlWithoutQuery.endsWith('.webm') || urlWithoutQuery.endsWith('.mkv')) {
+    return ['mediabunny', 'seek'];
+  }
+
+  return ['mp4box', 'mediabunny', 'seek'];
 }
 
 /**
@@ -45,26 +63,55 @@ export interface DecodedVideoInfo {
 export class VideoFileDecoder {
   private info: DecodedVideoInfo | null = null;
   private streaming: StreamingMp4Decoder | null = null;
+  private mediabunny: MediabunnyVideoDecoder | null = null;
   private seekFallback: SeekingVideoDecoder | null = null;
 
   async loadVideo(videoUrl: string): Promise<DecodedVideoInfo> {
-    // Try the fast streaming path first. If it can't parse the file (wrong
-    // container, unsupported codec, etc.) fall back to the seek-based path so
-    // legacy .webm recordings still export.
-    const streaming = new StreamingMp4Decoder();
-    try {
-      this.info = await streaming.load(videoUrl);
-      this.streaming = streaming;
-      return this.info;
-    } catch (err) {
-      console.warn('[VideoFileDecoder] Streaming path unavailable, falling back to <video> seek:', err);
-      streaming.destroy();
+    let lastError: unknown = null;
+
+    for (const decoderKind of getDecoderPlanForUrl(videoUrl)) {
+      if (decoderKind === 'mp4box') {
+        const streaming = new StreamingMp4Decoder();
+        try {
+          this.info = await streaming.load(videoUrl);
+          this.streaming = streaming;
+          return this.info;
+        } catch (err) {
+          lastError = err;
+          console.warn('[VideoFileDecoder] mp4box streaming path unavailable:', err);
+          streaming.destroy();
+        }
+      }
+
+      if (decoderKind === 'mediabunny') {
+        const mediabunny = new MediabunnyVideoDecoder();
+        try {
+          this.info = await mediabunny.load(videoUrl);
+          this.mediabunny = mediabunny;
+          return this.info;
+        } catch (err) {
+          lastError = err;
+          console.warn('[VideoFileDecoder] Mediabunny streaming path unavailable:', err);
+          mediabunny.destroy();
+        }
+      }
+
+      if (decoderKind === 'seek') {
+        const seek = new SeekingVideoDecoder();
+        try {
+          this.info = await seek.load(videoUrl);
+          this.seekFallback = seek;
+          return this.info;
+        } catch (err) {
+          lastError = err;
+          seek.destroy();
+        }
+      }
     }
 
-    const seek = new SeekingVideoDecoder();
-    this.info = await seek.load(videoUrl);
-    this.seekFallback = seek;
-    return this.info;
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('No video decoder could load this file');
   }
 
   /**
@@ -74,6 +121,7 @@ export class VideoFileDecoder {
    */
   frames(): AsyncGenerator<VideoFrame, void, void> {
     if (this.streaming) return this.streaming.frames();
+    if (this.mediabunny) return this.mediabunny.frames();
     if (this.seekFallback) return this.seekFallback.frames();
     throw new Error('loadVideo() must be called before frames()');
   }
@@ -84,8 +132,10 @@ export class VideoFileDecoder {
 
   destroy(): void {
     this.streaming?.destroy();
+    this.mediabunny?.destroy();
     this.seekFallback?.destroy();
     this.streaming = null;
+    this.mediabunny = null;
     this.seekFallback = null;
   }
 }
@@ -311,6 +361,85 @@ function extractCodecDescription(mp4: ISOFile, trackId: number): Uint8Array | nu
   }
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// General streaming path: Mediabunny demuxer + WebCodecs-backed sample sink
+// ---------------------------------------------------------------------------
+
+class MediabunnyVideoDecoder {
+  private input: Input | null = null;
+  private sampleSink: VideoSampleSink | null = null;
+  private cancelled = false;
+
+  async load(videoUrl: string): Promise<DecodedVideoInfo> {
+    const response = await fetch(videoUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch video (${response.status})`);
+    }
+
+    const blob = await response.blob();
+    const input = new Input({
+      source: new BlobSource(blob),
+      formats: ALL_FORMATS,
+    });
+    this.input = input;
+
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (!videoTrack) {
+      throw new Error('No video track in file');
+    }
+
+    if (!(await videoTrack.canDecode())) {
+      throw new Error(`Video track cannot be decoded: ${videoTrack.codec ?? 'unknown'}`);
+    }
+
+    this.sampleSink = new VideoSampleSink(videoTrack);
+
+    const [duration, codecParameterString, packetStats] = await Promise.all([
+      input.computeDuration(),
+      videoTrack.getCodecParameterString(),
+      videoTrack.computePacketStats(200).catch(() => null),
+    ]);
+
+    return {
+      width: videoTrack.displayWidth || videoTrack.codedWidth,
+      height: videoTrack.displayHeight || videoTrack.codedHeight,
+      duration,
+      frameRate: packetStats?.averagePacketRate || 60,
+      codec: codecParameterString || videoTrack.codec || 'unknown',
+    };
+  }
+
+  async *frames(): AsyncGenerator<VideoFrame, void, void> {
+    if (!this.sampleSink) {
+      throw new Error('MediabunnyVideoDecoder: load() not called');
+    }
+
+    try {
+      for await (const sample of this.sampleSink.samples()) {
+        if (this.cancelled) {
+          sample.close();
+          break;
+        }
+
+        const frame = sample.toVideoFrame();
+        sample.close();
+        yield frame;
+      }
+    } finally {
+      this.destroy();
+    }
+  }
+
+  destroy(): void {
+    this.cancelled = true;
+    if (this.input && !this.input.disposed) {
+      this.input.dispose();
+    }
+    this.input = null;
+    this.sampleSink = null;
+  }
 }
 
 // ---------------------------------------------------------------------------

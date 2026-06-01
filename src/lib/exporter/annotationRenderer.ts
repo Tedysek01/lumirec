@@ -1,5 +1,33 @@
 import type { AnnotationRegion, ArrowDirection } from '@/components/video-editor/types';
 
+export interface ImageAnnotationCache {
+  load(src: string): Promise<HTMLImageElement | null>;
+}
+
+export function createImageAnnotationCache(): ImageAnnotationCache {
+  const images = new Map<string, Promise<HTMLImageElement | null>>();
+
+  return {
+    load(src: string): Promise<HTMLImageElement | null> {
+      const cached = images.get(src);
+      if (cached) return cached;
+
+      const promise = new Promise<HTMLImageElement | null>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => {
+          console.error('[AnnotationRenderer] Failed to load image annotation');
+          resolve(null);
+        };
+        img.src = src;
+      });
+
+      images.set(src, promise);
+      return promise;
+    },
+  };
+}
+
 // SVG path data for each arrow direction
 const ARROW_PATHS: Record<ArrowDirection, string[]> = {
   'up': [
@@ -148,7 +176,7 @@ function renderText(
   const containerPadding = 8 * scaleFactor;
   
   let textX = x;
-  let textY = y + height / 2;
+  const textY = y + height / 2;
   
   if (style.textAlign === 'center') {
     textX = x + width / 2;
@@ -226,42 +254,36 @@ async function renderImage(
   x: number,
   y: number,
   width: number,
-  height: number
+  height: number,
+  imageCache?: ImageAnnotationCache
 ): Promise<void> {
-  if (!annotation.content || !annotation.content.startsWith('data:image')) {
+  const imageSrc = annotation.imageContent || annotation.content;
+  if (!imageSrc || !imageSrc.startsWith('data:image')) {
     return;
   }
-  
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      // Preserve aspect ratio - contain the image within the bounds
-      const imgAspect = img.width / img.height;
-      const boxAspect = width / height;
-      
-      let drawWidth = width;
-      let drawHeight = height;
-      let drawX = x;
-      let drawY = y;
-      
-      if (imgAspect > boxAspect) {
 
-        drawHeight = width / imgAspect;
-        drawY = y + (height - drawHeight) / 2;
-      } else {
-        drawWidth = height * imgAspect;
-        drawX = x + (width - drawWidth) / 2;
-      }
-      
-      ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
-      resolve();
-    };
-    img.onerror = () => {
-      console.error('[AnnotationRenderer] Failed to load image annotation');
-      resolve();
-    };
-    img.src = annotation.content;
-  });
+  const cache = imageCache || createImageAnnotationCache();
+  const img = await cache.load(imageSrc);
+  if (!img) return;
+
+  // Preserve aspect ratio - contain the image within the bounds
+  const imgAspect = img.width / img.height;
+  const boxAspect = width / height;
+
+  let drawWidth = width;
+  let drawHeight = height;
+  let drawX = x;
+  let drawY = y;
+
+  if (imgAspect > boxAspect) {
+    drawHeight = width / imgAspect;
+    drawY = y + (height - drawHeight) / 2;
+  } else {
+    drawWidth = height * imgAspect;
+    drawX = x + (width - drawWidth) / 2;
+  }
+
+  ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
 }
 
 export async function renderAnnotations(
@@ -270,7 +292,8 @@ export async function renderAnnotations(
   canvasWidth: number,
   canvasHeight: number,
   currentTimeMs: number,
-  scaleFactor: number = 1.0
+  scaleFactor: number = 1.0,
+  imageCache?: ImageAnnotationCache
 ): Promise<void> {
   // Filter active annotations at current time
   const activeAnnotations = annotations.filter(
@@ -292,7 +315,7 @@ export async function renderAnnotations(
         break;
         
       case 'image':
-        await renderImage(ctx, annotation, x, y, width, height);
+        await renderImage(ctx, annotation, x, y, width, height, imageCache);
         break;
         
       case 'figure':

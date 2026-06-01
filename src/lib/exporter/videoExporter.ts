@@ -2,6 +2,7 @@ import type { ExportConfig, ExportProgress, ExportResult } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
+import { createProgressYieldScheduler } from './progressYield';
 import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 import { extractAudioBuffer, buildTrimmedAudioBuffer } from './audioExtractor';
@@ -164,10 +165,21 @@ export class VideoExporter {
       // Calculate effective duration and frame count (excluding trim regions)
       const effectiveDuration = this.getEffectiveDuration(videoInfo.duration);
       const totalFrames = Math.ceil(effectiveDuration * this.config.frameRate);
+      const progressYield = createProgressYieldScheduler();
 
       console.log('[VideoExporter] Original duration:', videoInfo.duration, 's');
       console.log('[VideoExporter] Effective duration:', effectiveDuration, 's');
       console.log('[VideoExporter] Total frames to export:', totalFrames);
+
+      if (this.config.onProgress) {
+        this.config.onProgress({
+          currentFrame: 0,
+          totalFrames,
+          percentage: 0,
+          estimatedTimeRemaining: 0,
+        });
+        await progressYield.maybeYield();
+      }
 
       // Precompute the desired SOURCE timestamp (μs) for every output frame.
       // The mapping accounts for trim regions + segment gaps. Doing this once
@@ -228,6 +240,7 @@ export class VideoExporter {
             percentage: ((idx + 1) / totalFrames) * 100,
             estimatedTimeRemaining: 0,
           });
+          await progressYield.maybeYield();
         }
       };
 
@@ -274,6 +287,17 @@ export class VideoExporter {
       }
 
       // Finalize encoding
+      if (this.config.onProgress) {
+        this.config.onProgress({
+          currentFrame: totalFrames,
+          totalFrames,
+          percentage: 100,
+          estimatedTimeRemaining: 0,
+          phase: 'finalizing',
+        });
+        await progressYield.maybeYield();
+      }
+
       if (this.encoder && this.encoder.state === 'configured') {
         await this.encoder.flush();
       }

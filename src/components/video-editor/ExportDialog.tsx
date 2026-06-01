@@ -58,6 +58,8 @@ export function ExportDialog({
   const isFinalizing = progress?.phase === 'finalizing';
   const isAudioPhase = progress?.phase === 'audio';
   const renderProgress = progress?.renderProgress;
+  const finalizingLabel = exportFormat === 'gif' ? 'Compiling GIF' : 'Finalizing video';
+  const finalizingStatus = exportFormat === 'gif' ? 'Compiling...' : 'Finalizing...';
 
   // Get status message based on phase
   const getStatusMessage = () => {
@@ -74,7 +76,7 @@ export function ExportDialog({
       if (renderProgress !== undefined && renderProgress > 0) {
         return `Compiling GIF... ${renderProgress}%`;
       }
-      return 'Compiling GIF... This may take a while';
+      return `${finalizingLabel}... This may take a while`;
     }
     return 'This may take a moment...';
   };
@@ -83,7 +85,7 @@ export function ExportDialog({
   const getTitle = () => {
     if (error) return 'Export Failed';
     if (isAudioPhase) return 'Preparing Audio';
-    if (isCompiling || isFinalizing) return 'Compiling GIF';
+    if (isCompiling || isFinalizing) return finalizingLabel;
     return `Exporting ${formatLabel}`;
   };
 
@@ -174,7 +176,7 @@ export function ExportDialog({
                     ) : (
                       <span className="flex items-center gap-2">
                         <Loader2 className="w-3 h-3 animate-spin" />
-                        Processing...
+                        {exportFormat === 'gif' ? 'Processing...' : 'Saving...'}
                       </span>
                     )
                   ) : (
@@ -240,7 +242,7 @@ export function ExportDialog({
                   {isAudioPhase
                     ? 'Decoding audio...'
                     : isCompiling || isFinalizing
-                      ? 'Compiling...'
+                      ? finalizingStatus
                       : formatLabel}
                 </div>
               </div>

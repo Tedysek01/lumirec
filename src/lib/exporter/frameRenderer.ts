@@ -5,7 +5,7 @@ import { applyZoomTransform } from '@/components/video-editor/videoPlayback/zoom
 import { DEFAULT_FOCUS } from '@/components/video-editor/videoPlayback/constants';
 import { resolveTransformAtTime, resolveSpotlightAtTime } from '@/lib/keyframeInterpolation';
 import { findSegmentAtSourceTime } from '@/lib/segmentUtils';
-import { renderAnnotations } from './annotationRenderer';
+import { createImageAnnotationCache, renderAnnotations } from './annotationRenderer';
 import { renderCursorHighlight } from './cursorHighlightExportRenderer';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 
@@ -56,6 +56,7 @@ export class FrameRenderer {
   private animationState: AnimationState;
   private layoutCache: any = null;
   private currentVideoTime = 0;
+  private annotationImageCache = createImageAnnotationCache();
 
   constructor(config: FrameRenderConfig) {
     this.config = config;
@@ -381,7 +382,8 @@ export class FrameRenderer {
         this.config.width,
         this.config.height,
         timeMs,
-        scaleFactor
+        scaleFactor,
+        this.annotationImageCache
       );
     }
 

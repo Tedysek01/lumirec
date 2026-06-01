@@ -2,6 +2,7 @@ import GIF from 'gif.js';
 import type { ExportProgress, ExportResult, GifFrameRate, GifSizePreset, GIF_SIZE_PRESETS } from './types';
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
+import { createProgressYieldScheduler } from './progressYield';
 import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 import { computeGapRegions } from '@/lib/segmentUtils';
@@ -174,6 +175,7 @@ export class GifExporter {
       // Calculate effective duration and frame count (excluding trim regions)
       const effectiveDuration = this.getEffectiveDuration(videoInfo.duration);
       const totalFrames = Math.ceil(effectiveDuration * this.config.frameRate);
+      const progressYield = createProgressYieldScheduler();
 
       // Calculate frame delay in milliseconds (gif.js uses ms)
       const frameDelay = Math.round(1000 / this.config.frameRate);
@@ -184,6 +186,16 @@ export class GifExporter {
       console.log('[GifExporter] Frame rate:', this.config.frameRate, 'FPS');
       console.log('[GifExporter] Frame delay:', frameDelay, 'ms');
       console.log('[GifExporter] Loop:', this.config.loop ? 'infinite' : 'once');
+
+      if (this.config.onProgress) {
+        this.config.onProgress({
+          currentFrame: 0,
+          totalFrames,
+          percentage: 0,
+          estimatedTimeRemaining: 0,
+        });
+        await progressYield.maybeYield();
+      }
 
       // Precompute desired SOURCE timestamp (μs) for each output frame; same
       // streaming-consumer pattern as VideoExporter, just with `gif.addFrame`
@@ -208,6 +220,7 @@ export class GifExporter {
             percentage: ((idx + 1) / totalFrames) * 100,
             estimatedTimeRemaining: 0,
           });
+          await progressYield.maybeYield();
         }
       };
 
@@ -259,6 +272,7 @@ export class GifExporter {
           estimatedTimeRemaining: 0,
           phase: 'finalizing',
         });
+        await progressYield.maybeYield();
       }
 
       // Render the GIF
