@@ -3,7 +3,7 @@ import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { VideoMuxer } from './muxer';
 import { createProgressYieldScheduler } from './progressYield';
-import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment, ZoomRegion } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 import { extractAudioBuffer, buildTrimmedAudioBuffer } from './audioExtractor';
 import { computeGapRegions } from '@/lib/segmentUtils';
@@ -28,6 +28,7 @@ interface VideoExporterConfig extends ExportConfig {
   cursorData?: CursorFrame[];
   cursorHighlight?: CursorHighlightConfig;
   videoSegments?: VideoSegment[];
+  zoomRegions?: ZoomRegion[];
   includeAudio?: boolean;
   onProgress?: (progress: ExportProgress) => void;
 }
@@ -112,6 +113,7 @@ export class VideoExporter {
         height: this.config.height,
         wallpaper: this.config.wallpaper,
         videoSegments: this.config.videoSegments,
+        zoomRegions: this.config.zoomRegions,
         showShadow: this.config.showShadow,
         shadowIntensity: this.config.shadowIntensity,
         showBlur: this.config.showBlur,

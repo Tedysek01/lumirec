@@ -17,14 +17,34 @@ export const DEFAULT_TRANSITION_CONFIG: TransitionConfig = {
   durationMs: 300,
 };
 
+/**
+ * A user-authored camera anchor inside a zoom region's "hold" phase.
+ * Pan points are the ONLY way the camera position/zoom is steered between the
+ * zoom-in and zoom-out transitions. They live on the ZoomRegion itself — the
+ * region is the single source of truth for everything about a zoom.
+ */
+export interface ZoomPanPoint {
+  id: string;
+  timeMs: number;   // relative to region.startMs
+  focusX: number;   // 0-1
+  focusY: number;   // 0-1
+  zoom: number;     // target zoom multiplier at this anchor
+}
+
 export interface ZoomRegion {
   id: string;
   startMs: number;
   endMs: number;
-  depth: ZoomDepth;
-  focus: ZoomFocus;
-  enterTransition?: TransitionConfig;
-  exitTransition?: TransitionConfig;
+  depth: ZoomDepth;             // default/base target zoom (used when no pan points)
+  focus: ZoomFocus;            // default/base focus (used when no pan points)
+  enterTransition?: TransitionConfig;  // zoom-in duration/easing
+  exitTransition?: TransitionConfig;   // zoom-out duration/easing
+  /**
+   * User camera anchors during the hold. Empty = a single implicit anchor at
+   * (focus, ZOOM_DEPTH_SCALES[depth]). The region + these points fully describe
+   * the camera path; no derived keyframes are stored anywhere.
+   */
+  panPoints?: ZoomPanPoint[];
 }
 
 export interface TrimRegion {

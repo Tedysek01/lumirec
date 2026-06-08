@@ -3,7 +3,7 @@ import type { ExportProgress, ExportResult, GifFrameRate, GifSizePreset, GIF_SIZ
 import { VideoFileDecoder } from './videoDecoder';
 import { FrameRenderer } from './frameRenderer';
 import { createProgressYieldScheduler } from './progressYield';
-import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CropRegion, TrimRegion, AnnotationRegion, SpotlightRegion, VideoSegment, ZoomRegion } from '@/components/video-editor/types';
 import type { CursorFrame, CursorHighlightConfig } from '@/lib/cursorTracker';
 import { computeGapRegions } from '@/lib/segmentUtils';
 
@@ -34,6 +34,7 @@ interface GifExporterConfig {
   cursorData?: CursorFrame[];
   cursorHighlight?: CursorHighlightConfig;
   videoSegments?: VideoSegment[];
+  zoomRegions?: ZoomRegion[];
   onProgress?: (progress: ExportProgress) => void;
 }
 
@@ -137,6 +138,7 @@ export class GifExporter {
         height: this.config.height,
         wallpaper: this.config.wallpaper,
         videoSegments: this.config.videoSegments,
+        zoomRegions: this.config.zoomRegions,
         showShadow: this.config.showShadow,
         shadowIntensity: this.config.shadowIntensity,
         showBlur: this.config.showBlur,

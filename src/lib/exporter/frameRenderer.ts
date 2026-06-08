@@ -1,9 +1,11 @@
 import { Application, Container, Sprite, Graphics, BlurFilter, Texture, ImageSource } from 'pixi.js';
-import type { CropRegion, AnnotationRegion, SpotlightRegion, VideoSegment } from '@/components/video-editor/types';
+import type { CropRegion, AnnotationRegion, SpotlightRegion, VideoSegment, ZoomRegion } from '@/components/video-editor/types';
 import { getSpotlightFadeOpacity } from '@/components/video-editor/types';
 import { applyZoomTransform } from '@/components/video-editor/videoPlayback/zoomTransform';
 import { DEFAULT_FOCUS } from '@/components/video-editor/videoPlayback/constants';
 import { resolveTransformAtTime, resolveSpotlightAtTime } from '@/lib/keyframeInterpolation';
+import { resolveCornerRadius } from '@/lib/cornerRadius';
+import { resolveZoomCameraAtTime, findActiveZoomRegion, IDENTITY_CAMERA } from '@/lib/zoomCamera';
 import { findSegmentAtSourceTime } from '@/lib/segmentUtils';
 import { createImageAnnotationCache, renderAnnotations } from './annotationRenderer';
 import { renderCursorHighlight } from './cursorHighlightExportRenderer';
@@ -14,6 +16,7 @@ interface FrameRenderConfig {
   height: number;
   wallpaper: string;
   videoSegments?: VideoSegment[];
+  zoomRegions?: ZoomRegion[];
   showShadow: boolean;
   shadowIntensity: number;
   showBlur: boolean;
@@ -457,15 +460,10 @@ export class FrameRenderer {
     this.videoContainer.x = centerOffsetX;
     this.videoContainer.y = centerOffsetY;
 
-    // scale border radius by export/preview canvas ratio so the exported
-    // rounded video corners look identical to what the user sees in the
-    // preview (which runs at a smaller canvas).
-    const previewWidth = this.config.previewWidth || 1920;
-    const previewHeight = this.config.previewHeight || 1080;
-    const canvasScaleFactor = Math.min(width / previewWidth, height / previewHeight);
-    const scaledBorderRadius = effectiveVideoRadius * canvasScaleFactor;
-    const maxRadius = Math.min(croppedDisplayWidth, croppedDisplayHeight) / 2;
-    const safeRadius = Math.max(0, Math.min(scaledBorderRadius, maxRadius));
+    // The corner radius is a fraction of the displayed frame's shorter side
+    // (see cornerRadius.ts). Because it is resolution-independent, the exported
+    // rounded corners match the preview exactly without any canvas-ratio fudge.
+    const safeRadius = resolveCornerRadius(effectiveVideoRadius, croppedDisplayWidth, croppedDisplayHeight);
 
     this.maskGraphics.clear();
     this.maskGraphics.roundRect(0, 0, croppedDisplayWidth, croppedDisplayHeight, safeRadius);
@@ -489,26 +487,15 @@ export class FrameRenderer {
     const prevFocusX = state.focusX;
     const prevFocusY = state.focusY;
 
-    // Resolve zoom from segment keyframes
-    let zoomScale = 1;
-    let focusXVal = DEFAULT_FOCUS.cx;
-    let focusYVal = DEFAULT_FOCUS.cy;
+    // Zoom/focus are derived from the active zoom region (single source of
+    // truth), matching the live preview exactly. Keyframes only carry manual
+    // rotation/scale/position (applied separately via segmentTransform).
+    const region = findActiveZoomRegion(this.config.zoomRegions ?? [], timeMs);
+    const cam = region ? resolveZoomCameraAtTime(region, timeMs) : IDENTITY_CAMERA;
 
-    const segments = this.config.videoSegments;
-    if (segments && segments.length > 0) {
-      const seg = findSegmentAtSourceTime(segments, timeMs);
-      if (seg) {
-        const relativeTime = timeMs - seg.sourceStartMs;
-        const resolved = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
-        zoomScale = resolved.zoom;
-        focusXVal = resolved.focusX;
-        focusYVal = resolved.focusY;
-      }
-    }
-
-    state.scale = zoomScale;
-    state.focusX = focusXVal;
-    state.focusY = focusYVal;
+    state.scale = cam.zoom;
+    state.focusX = cam.focusX;
+    state.focusY = cam.focusY;
 
     return Math.max(
       Math.abs(state.scale - prevScale),

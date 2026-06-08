@@ -393,6 +393,9 @@ export default function VideoEditor() {
     handleAddZoomPanPoint,
     handleHoldPanPoint,
     handleZoomPropertyChange,
+    handleMoveZoomPanPoint,
+    handleDeleteZoomPanPoint,
+    clampZoomPanPointTime,
     playheadInsideSelectedZoom,
     activeZoomTransform,
   } = useZoomHandlers({
@@ -790,6 +793,7 @@ export default function VideoEditor() {
           cursorData,
           cursorHighlight,
           videoSegments,
+          zoomRegions,
           onProgress: (progress: ExportProgress) => {
             setExportProgress(progress);
           },
@@ -919,6 +923,7 @@ export default function VideoEditor() {
           cursorData,
           cursorHighlight,
           videoSegments,
+          zoomRegions,
           onProgress: (progress: ExportProgress) => {
             setExportProgress(progress);
           },
@@ -1217,6 +1222,9 @@ export default function VideoEditor() {
               onAddKeyframeAtPlayhead={handleAddKeyframeAtPlayhead}
               onDeleteKeyframesAtTime={handleDeleteKeyframesAtTime}
               onMoveKeyframesAtTime={handleMoveKeyframesAtTime}
+              onMoveZoomPanPoint={handleMoveZoomPanPoint}
+              onDeleteZoomPanPoint={handleDeleteZoomPanPoint}
+              clampZoomPanPointTime={clampZoomPanPointTime}
             />
               </div>
             </Panel>

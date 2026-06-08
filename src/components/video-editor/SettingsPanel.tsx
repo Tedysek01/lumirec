@@ -747,13 +747,13 @@ export function SettingsPanel({
                 <div className="p-2 rounded-lg bg-secondary border border-border/30">
                   <div className="flex items-center justify-between mb-1">
                     <div className="text-[10px] font-medium text-foreground/80">Roundness</div>
-                    <span className="text-[10px] text-muted-foreground font-mono">{borderRadius}px</span>
+                    <span className="text-[10px] text-muted-foreground font-mono">{borderRadius}</span>
                   </div>
                   <Slider
                     value={[borderRadius]}
                     onValueChange={(values) => onBorderRadiusChange?.(values[0])}
                     min={0}
-                    max={32}
+                    max={100}
                     step={1}
                     className="w-full [&_[role=slider]]:bg-primary [&_[role=slider]]:border-primary [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                   />

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTimelineContext } from "dnd-timeline";
-import type { VideoSegment, SpotlightRegion } from "../types";
-import { getUniqueKeyframeTimes, getUniquePanPointTimes, getUniqueManualKeyframeTimes, getUniqueSpotlightPointTimes } from "@/lib/keyframeInterpolation";
-import { sourceToDisplayTime } from "@/lib/segmentUtils";
+import type { VideoSegment, SpotlightRegion, ZoomRegion } from "../types";
+import { getUniqueKeyframeTimes, getUniqueManualKeyframeTimes, getUniqueSpotlightPointTimes } from "@/lib/keyframeInterpolation";
+import { sourceToDisplayTime, displayToSourceTime } from "@/lib/segmentUtils";
 
 type KeyframeFilter = 'zoom' | 'manual' | 'spotlight' | 'all';
 
@@ -19,17 +19,26 @@ interface KeyframeTrackProps {
   filter?: KeyframeFilter;
   /** Spotlight regions — used when filter="spotlight" to render spotlight keyframe diamonds */
   spotlightRegions?: SpotlightRegion[];
-  /** Video segments — needed for source-to-display time mapping in spotlight mode */
+  /** Zoom regions — used when filter="zoom" to render pan-point diamonds (single source of truth) */
+  zoomRegions?: ZoomRegion[];
+  /** Video segments — needed for source↔display time mapping in zoom/spotlight modes */
   videoSegments?: VideoSegment[];
+  // --- Zoom pan-point editing (region-based) ---
+  onMoveZoomPanPoint?: (regionId: string, oldRelTimeMs: number, newRelTimeMs: number) => void;
+  onDeleteZoomPanPoint?: (regionId: string, relTimeMs: number) => void;
+  clampZoomPanPointTime?: (regionId: string, relTimeMs: number) => number;
 }
 
 /**
- * Renders gold diamond markers grouped by unique time within a video segment's timeline region.
- * Supports click-to-select, drag-to-move, and right-click-to-delete.
+ * Renders diamond markers on the timeline.
+ *  - filter="manual"/"all": gold diamonds from a segment's manual keyframes.
+ *  - filter="spotlight":    purple diamonds from spotlight keyframes.
+ *  - filter="zoom":         cyan diamonds from zoom-region pan points (the
+ *                           region is the single source of truth; there are no
+ *                           zoom keyframes anymore).
  *
- * Wrapped in a div with pointer-events:none so that only the individual
- * diamond hit-targets capture mouse events — preventing interference
- * with timeline panning, seeking, and DnD.
+ * Wrapped in a pointer-events:none div so only the diamond hit-targets capture
+ * mouse events, leaving timeline panning/seeking/DnD untouched.
  */
 export default function KeyframeTrack({
   segment,
@@ -42,25 +51,29 @@ export default function KeyframeTrack({
   timelineRef,
   filter = 'all',
   spotlightRegions,
+  zoomRegions,
   videoSegments,
+  onMoveZoomPanPoint,
+  onDeleteZoomPanPoint,
+  clampZoomPanPointTime,
 }: KeyframeTrackProps) {
   const { sidebarWidth, range, valueToPixels, pixelsToValue } = useTimelineContext();
   const [draggingTime, setDraggingTime] = useState<number | null>(null);
+  // Zoom pan-point drag state: which region + the current (region-relative) time.
+  const [draggingPan, setDraggingPan] = useState<{ regionId: string; relTimeMs: number } | null>(null);
   // Track where the mouse went down so we can require real movement before
-  // treating the gesture as a drag. Without this, any pixel of jitter during
-  // a plain click moves the keyframe and the user never gets a clean selection.
+  // treating the gesture as a drag (avoids click jitter shifting keyframes).
   const dragStartRef = useRef<{ x: number; active: boolean } | null>(null);
   const DRAG_THRESHOLD_PX = 4;
 
-  // --- Spotlight mode: render diamonds for spotlight keyframes ---
   const isSpotlightMode = filter === 'spotlight';
+  const isZoomMode = filter === 'zoom';
 
-  // Build spotlight keyframe display entries: [{displayTimeMs, spotlightId, relTimeMs}]
+  // Build spotlight keyframe display entries.
   const spotlightEntries = isSpotlightMode && spotlightRegions
     ? spotlightRegions.flatMap(spot => {
         const pointTimes = getUniqueSpotlightPointTimes(spot.keyframes);
         return pointTimes.map(relTime => {
-          // Convert spotlight-relative time to source time, then to display time
           const sourceTimeMs = spot.startMs + relTime;
           const displayTimeMs = videoSegments && videoSegments.length > 0
             ? sourceToDisplayTime(videoSegments, sourceTimeMs)
@@ -70,60 +83,57 @@ export default function KeyframeTrack({
       })
     : [];
 
-  const keyframes = segment.keyframes ?? [];
-  const uniqueTimes = isSpotlightMode
-    ? [] // Spotlight mode uses spotlightEntries instead
-    : filter === 'zoom'
-      ? getUniquePanPointTimes(keyframes)
-      : filter === 'manual'
-        ? getUniqueManualKeyframeTimes(keyframes)
-        : getUniqueKeyframeTimes(keyframes);
+  // Build zoom pan-point display entries from regions (single source of truth).
+  const zoomEntries = isZoomMode && zoomRegions
+    ? zoomRegions.flatMap(region =>
+        (region.panPoints ?? []).map(p => {
+          const sourceTimeMs = region.startMs + p.timeMs;
+          const displayTimeMs = videoSegments && videoSegments.length > 0
+            ? sourceToDisplayTime(videoSegments, sourceTimeMs)
+            : sourceTimeMs;
+          return { displayTimeMs, regionId: region.id, relTimeMs: p.timeMs, panId: p.id, sourceTimeMs };
+        }),
+      )
+    : [];
 
-  // Diamond color: purple for spotlight, cyan for zoom, gold for manual/all
-  const diamondColor = isSpotlightMode ? '#8B5CF6' : filter === 'zoom' ? '#06b6d4' : '#ffe100';
+  const keyframes = segment.keyframes ?? [];
+  const uniqueTimes = isSpotlightMode || isZoomMode
+    ? []
+    : filter === 'manual'
+      ? getUniqueManualKeyframeTimes(keyframes)
+      : getUniqueKeyframeTimes(keyframes);
+
+  const diamondColor = isSpotlightMode ? '#8B5CF6' : isZoomMode ? '#06b6d4' : '#ffe100';
   const segmentDurationMs = segment.sourceEndMs - segment.sourceStartMs;
 
-  // Drag-to-move handler
+  // --- Manual/all drag-to-move (segment-relative) ---
   useEffect(() => {
     if (draggingTime === null) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!timelineRef.current || !onMoveKeyframesAtTime) return;
-
-      // Don't move the keyframe until the mouse has traveled past the drag
-      // threshold. Plain clicks produce 1-3px of natural jitter — without
-      // this guard every click silently shifts the keyframe a few ms.
       const startInfo = dragStartRef.current;
       if (startInfo && !startInfo.active) {
         if (Math.abs(e.clientX - startInfo.x) < DRAG_THRESHOLD_PX) return;
         startInfo.active = true;
         document.body.style.cursor = 'ew-resize';
       }
-
       const rect = timelineRef.current.getBoundingClientRect();
       const clickX = e.clientX - rect.left - sidebarWidth;
-      const relativeMs = pixelsToValue(clickX);
-      const absoluteMs = range.start + relativeMs;
-
-      // Convert display time to segment-relative time
+      const absoluteMs = range.start + pixelsToValue(clickX);
       const relativeToSegment = absoluteMs - segment.timelineStartMs;
-      const clampedRelative = Math.max(0, Math.min(relativeToSegment, segmentDurationMs));
-
-      onMoveKeyframesAtTime(segment.id, draggingTime, Math.round(clampedRelative));
-      setDraggingTime(Math.round(clampedRelative));
+      const clampedRelative = Math.round(Math.max(0, Math.min(relativeToSegment, segmentDurationMs)));
+      onMoveKeyframesAtTime(segment.id, draggingTime, clampedRelative);
+      setDraggingTime(clampedRelative);
     };
-
     const handleMouseUp = () => {
       setDraggingTime(null);
       dragStartRef.current = null;
       document.body.style.cursor = '';
+      delete document.body.dataset.kfDragging;
     };
-
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-    // Cursor only becomes ew-resize once the drag threshold is crossed,
-    // so a plain click keeps the normal cursor.
-
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
@@ -131,115 +141,161 @@ export default function KeyframeTrack({
     };
   }, [draggingTime, onMoveKeyframesAtTime, timelineRef, sidebarWidth, range.start, segment.id, segment.timelineStartMs, segmentDurationMs, pixelsToValue]);
 
+  // --- Zoom pan-point drag-to-move (region-relative) ---
+  useEffect(() => {
+    if (draggingPan === null) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!timelineRef.current || !onMoveZoomPanPoint || !zoomRegions) return;
+      const region = zoomRegions.find(r => r.id === draggingPan.regionId);
+      if (!region) return;
+      const startInfo = dragStartRef.current;
+      if (startInfo && !startInfo.active) {
+        if (Math.abs(e.clientX - startInfo.x) < DRAG_THRESHOLD_PX) return;
+        startInfo.active = true;
+        document.body.style.cursor = 'ew-resize';
+      }
+      const rect = timelineRef.current.getBoundingClientRect();
+      const clickX = e.clientX - rect.left - sidebarWidth;
+      const displayMs = range.start + pixelsToValue(clickX);
+      // display → source → region-relative
+      const sourceMs = videoSegments && videoSegments.length > 0
+        ? displayToSourceTime(videoSegments, displayMs)
+        : displayMs;
+      const rawRel = sourceMs - region.startMs;
+      const finalRel = clampZoomPanPointTime
+        ? Math.round(clampZoomPanPointTime(region.id, Math.round(rawRel)))
+        : Math.round(rawRel);
+      onMoveZoomPanPoint(region.id, draggingPan.relTimeMs, finalRel);
+      setDraggingPan({ regionId: region.id, relTimeMs: finalRel });
+    };
+    const handleMouseUp = () => {
+      setDraggingPan(null);
+      dragStartRef.current = null;
+      document.body.style.cursor = '';
+      delete document.body.dataset.kfDragging;
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+    };
+  }, [draggingPan, onMoveZoomPanPoint, clampZoomPanPointTime, zoomRegions, videoSegments, timelineRef, sidebarWidth, range.start, pixelsToValue]);
+
   const handleContextMenu = useCallback((e: React.MouseEvent, timeMs: number) => {
     e.preventDefault();
     e.stopPropagation();
     onDeleteKeyframesAtTime?.(segment.id, timeMs);
   }, [segment.id, onDeleteKeyframesAtTime]);
 
-  // Spotlight mode renders from spotlightEntries, regular mode from uniqueTimes
-  if (isSpotlightMode ? spotlightEntries.length === 0 : uniqueTimes.length === 0) return null;
+  const isEmpty = isSpotlightMode
+    ? spotlightEntries.length === 0
+    : isZoomMode
+      ? zoomEntries.length === 0
+      : uniqueTimes.length === 0;
+  if (isEmpty) return null;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', pointerEvents: 'none' }}>
-      {isSpotlightMode
-        ? spotlightEntries.map((entry) => {
-            const { displayTimeMs, spotlightId, sourceTimeMs } = entry;
-            if (displayTimeMs < range.start || displayTimeMs > range.end) return null;
+      {isSpotlightMode && spotlightEntries.map((entry) => {
+        const { displayTimeMs, spotlightId, sourceTimeMs } = entry;
+        if (displayTimeMs < range.start || displayTimeMs > range.end) return null;
+        const offset = valueToPixels(displayTimeMs - range.start);
+        return (
+          <div
+            key={`kf-spot-${spotlightId}-${entry.relTimeMs}`}
+            className="absolute cursor-pointer"
+            style={{ left: `${offset - 5}px`, top: '50%', transform: 'translateY(-50%)', zIndex: 40, pointerEvents: 'auto' }}
+            onMouseDown={(e) => { e.stopPropagation(); if (onSeek) onSeek(sourceTimeMs / 1000); }}
+            onClick={(e) => e.stopPropagation()}
+            title={`Spotlight point @ ${Math.round(entry.relTimeMs)}ms`}
+          >
+            <div style={{ width: '10px', height: '10px', background: diamondColor, transform: 'rotate(45deg)', opacity: 0.85, transition: 'opacity 0.15s' }} />
+          </div>
+        );
+      })}
 
-            const offset = valueToPixels(displayTimeMs - range.start);
+      {isZoomMode && zoomEntries.map((entry) => {
+        const { displayTimeMs, regionId, relTimeMs, panId, sourceTimeMs } = entry;
+        if (displayTimeMs < range.start || displayTimeMs > range.end) return null;
+        const offset = valueToPixels(displayTimeMs - range.start);
+        const isDragging = draggingPan !== null && draggingPan.regionId === regionId && Math.abs(draggingPan.relTimeMs - relTimeMs) < 1;
+        return (
+          <div
+            key={`kf-pan-${panId}`}
+            className="absolute cursor-grab active:cursor-grabbing"
+            style={{
+              left: `${offset - 5}px`,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              zIndex: 40,
+              pointerEvents: 'auto',
+              transition: isDragging ? 'none' : 'left 0.1s ease-out',
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              if (onSeek) onSeek(sourceTimeMs / 1000);
+              dragStartRef.current = { x: e.clientX, active: false };
+              setDraggingPan({ regionId, relTimeMs });
+              // Lock timeline wheel-pan/zoom during the drag (see TimelineWrapper).
+              document.body.dataset.kfDragging = '1';
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onDeleteZoomPanPoint?.(regionId, relTimeMs); }}
+            title={`Pan point @ ${Math.round(relTimeMs)}ms (drag to move, right-click to remove)`}
+          >
+            <div style={{ width: '10px', height: '10px', background: diamondColor, transform: 'rotate(45deg)', opacity: 0.8, transition: 'opacity 0.15s' }} />
+          </div>
+        );
+      })}
 
-            return (
-              <div
-                key={`kf-spot-${spotlightId}-${entry.relTimeMs}`}
-                className="absolute cursor-pointer"
-                style={{
-                  left: `${offset - 5}px`,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  zIndex: 40,
-                  pointerEvents: 'auto',
-                }}
-                onMouseDown={(e) => {
-                  e.stopPropagation();
-                  // Snap playhead to spotlight keyframe's source time
-                  if (onSeek) {
-                    onSeek(sourceTimeMs / 1000);
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                title={`Spotlight point @ ${Math.round(entry.relTimeMs)}ms`}
-              >
-                <div
-                  style={{
-                    width: '10px',
-                    height: '10px',
-                    background: diamondColor,
-                    transform: 'rotate(45deg)',
-                    opacity: 0.85,
-                    transition: 'opacity 0.15s',
-                  }}
-                />
-              </div>
-            );
-          })
-        : uniqueTimes.map((timeMs) => {
-            // Convert segment-relative time to display timeline time
-            const displayTimeMs = segment.timelineStartMs + timeMs;
-            if (displayTimeMs < range.start || displayTimeMs > range.end) return null;
-
-            const offset = valueToPixels(displayTimeMs - range.start);
-            const isSelected = selectedKeyframeTime !== null && Math.abs(selectedKeyframeTime - timeMs) < 1;
-            const isDragging = draggingTime !== null && Math.abs(draggingTime - timeMs) < 1;
-
-            return (
-              <div
-                key={`kf-${segment.id}-${timeMs}`}
-                className="absolute cursor-grab active:cursor-grabbing"
-                style={{
-                  left: `${offset - 5}px`,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  zIndex: isSelected ? 50 : 40,
-                  pointerEvents: 'auto',
-                  transition: isDragging ? 'none' : 'left 0.1s ease-out',
-                }}
-                onMouseDown={(e) => {
-                  e.stopPropagation();
-                  onSelectKeyframeTime(timeMs);
-                  // Always snap the playhead to the keyframe's exact source time
-                  // on mousedown. Previously this only fired on re-select, so a
-                  // click that stayed selected left the playhead on the click-X
-                  // pixel a few ms off the keyframe.
-                  if (onSeek) {
-                    const sourceTimeSec = (segment.sourceStartMs + timeMs) / 1000;
-                    onSeek(sourceTimeSec);
-                  }
-                  dragStartRef.current = { x: e.clientX, active: false };
-                  setDraggingTime(timeMs);
-                }}
-                // Swallow the click event so it doesn't bubble up and hit the
-                // Timeline's handleTimelineClick, which would clear selection
-                // and re-seek to the pixel the click landed on.
-                onClick={(e) => e.stopPropagation()}
-                onContextMenu={(e) => handleContextMenu(e, timeMs)}
-                title={`Keyframe @ ${Math.round(timeMs)}ms (drag to move, Delete to remove)`}
-              >
-                <div
-                  style={{
-                    width: '10px',
-                    height: '10px',
-                    background: diamondColor,
-                    transform: 'rotate(45deg)',
-                    border: isSelected ? '1.5px solid white' : 'none',
-                    boxShadow: isSelected ? `0 0 6px ${diamondColor}99` : 'none',
-                    opacity: isSelected ? 1 : 0.7,
-                    transition: 'opacity 0.15s, box-shadow 0.15s',
-                  }}
-                />
-              </div>
-            );
-          })}
+      {!isSpotlightMode && !isZoomMode && uniqueTimes.map((timeMs) => {
+        const displayTimeMs = segment.timelineStartMs + timeMs;
+        if (displayTimeMs < range.start || displayTimeMs > range.end) return null;
+        const offset = valueToPixels(displayTimeMs - range.start);
+        const isSelected = selectedKeyframeTime !== null && Math.abs(selectedKeyframeTime - timeMs) < 1;
+        const isDragging = draggingTime !== null && Math.abs(draggingTime - timeMs) < 1;
+        return (
+          <div
+            key={`kf-${segment.id}-${timeMs}`}
+            className="absolute cursor-grab active:cursor-grabbing"
+            style={{
+              left: `${offset - 5}px`,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              zIndex: isSelected ? 50 : 40,
+              pointerEvents: 'auto',
+              transition: isDragging ? 'none' : 'left 0.1s ease-out',
+            }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              onSelectKeyframeTime(timeMs);
+              if (onSeek) onSeek((segment.sourceStartMs + timeMs) / 1000);
+              dragStartRef.current = { x: e.clientX, active: false };
+              setDraggingTime(timeMs);
+              document.body.dataset.kfDragging = '1';
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => handleContextMenu(e, timeMs)}
+            title={`Keyframe @ ${Math.round(timeMs)}ms (drag to move, Delete to remove)`}
+          >
+            <div
+              style={{
+                width: '10px',
+                height: '10px',
+                background: diamondColor,
+                transform: 'rotate(45deg)',
+                border: isSelected ? '1.5px solid white' : 'none',
+                boxShadow: isSelected ? `0 0 6px ${diamondColor}99` : 'none',
+                opacity: isSelected ? 1 : 0.7,
+                transition: 'opacity 0.15s, box-shadow 0.15s',
+              }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

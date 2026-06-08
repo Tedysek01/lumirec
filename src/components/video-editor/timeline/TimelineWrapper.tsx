@@ -13,6 +13,14 @@ const useTrackpadPanStrategy: UsePanStrategy = (timelineBag, onPanEnd) => {
     if (!element) return;
 
     const handler = (event: WheelEvent) => {
+      // While a keyframe diamond is being dragged, ignore wheel pan/zoom: changing
+      // the visible range mid-drag desyncs the drag math and makes the keyframe
+      // jump ("scrolling breaks the zoom"). KeyframeTrack sets this flag.
+      if (document.body.dataset.kfDragging === '1') {
+        event.preventDefault();
+        return;
+      }
+
       const isZoom = event.ctrlKey || event.metaKey;
 
       if (isZoom) {

@@ -97,6 +97,12 @@ interface TimelineEditorProps {
   onAddKeyframeAtPlayhead?: (segmentId: string, relativeTimeMs: number) => void;
   onDeleteKeyframesAtTime?: (segmentId: string, timeMs: number) => void;
   onMoveKeyframesAtTime?: (segmentId: string, oldTimeMs: number, newTimeMs: number) => void;
+  /** Move a zoom pan point (region-relative ms); clamps out of the transition zones. */
+  onMoveZoomPanPoint?: (regionId: string, oldRelTimeMs: number, newRelTimeMs: number) => void;
+  /** Delete a zoom pan point at a region-relative time. */
+  onDeleteZoomPanPoint?: (regionId: string, relTimeMs: number) => void;
+  /** Clamp a candidate pan-point time to its zoom region's safe hold window. */
+  clampZoomPanPointTime?: (regionId: string, relTimeMs: number) => number;
 }
 
 interface TimelineScaleConfig {
@@ -763,6 +769,9 @@ export default function TimelineEditor({
   onAddKeyframeAtPlayhead,
   onDeleteKeyframesAtTime,
   onMoveKeyframesAtTime,
+  onMoveZoomPanPoint,
+  onDeleteZoomPanPoint,
+  clampZoomPanPointTime,
 }: TimelineEditorProps) {
   const totalMs = useMemo(() => Math.max(0, Math.round(videoDuration * 1000)), [videoDuration]);
   // Effective total for display: sum of segment durations (no gaps)
@@ -1402,20 +1411,23 @@ export default function TimelineEditor({
               ) : undefined
             }
           >
-            {videoSegments.map(segment => (
+            {zoomRegions.length > 0 && (
               <KeyframeTrack
-                key={`kf-zoom-${segment.id}`}
-                segment={segment}
+                key="kf-zoom"
+                segment={videoSegments[0] || { id: 'dummy', sourceStartMs: 0, sourceEndMs: effectiveTotalMs, timelineStartMs: 0, transform: {} as VideoSegment['transform'], keyframes: [] }}
                 filter="zoom"
-                selectedKeyframeTime={selectedKeyframeSegmentId === segment.id ? selectedKeyframeTime : null}
-                onSelectKeyframeTime={(timeMs) => handleSelectKeyframeTime(segment.id, timeMs)}
-                onDeleteKeyframesAtTime={onDeleteKeyframesAtTime}
-                onMoveKeyframesAtTime={onMoveKeyframesAtTime}
+                zoomRegions={zoomRegions}
+                videoSegments={videoSegments}
+                selectedKeyframeTime={null}
+                onSelectKeyframeTime={() => {}}
+                onMoveZoomPanPoint={onMoveZoomPanPoint}
+                onDeleteZoomPanPoint={onDeleteZoomPanPoint}
+                clampZoomPanPointTime={clampZoomPanPointTime}
                 onSeek={onSeek}
                 videoDurationMs={effectiveTotalMs}
                 timelineRef={timelineContentRef}
               />
-            ))}
+            )}
           </Timeline>
         </TimelineWrapper>
       </div>

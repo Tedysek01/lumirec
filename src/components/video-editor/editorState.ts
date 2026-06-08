@@ -2,6 +2,7 @@ import type { ZoomRegion, TrimRegion, AnnotationRegion, CropRegion, VideoSegment
 import { DEFAULT_CROP_REGION } from "./types";
 import type { AspectRatio } from "@/utils/aspectRatioUtils";
 import { type CursorHighlightConfig, DEFAULT_CURSOR_HIGHLIGHT_CONFIG } from "@/lib/cursorTracker";
+import { DEFAULT_ROUNDNESS } from "@/lib/cornerRadius";
 
 /**
  * State that is tracked by undo/redo.
@@ -42,7 +43,9 @@ export function createInitialEditorState(wallpaper: string = DEFAULT_WALLPAPER):
     shadowIntensity: 0,
     showBlur: false,
     motionBlurEnabled: false,
-    borderRadius: 0,
+    // Subtle rounded corners out of the box (Screen Studio parity). Interpreted
+    // as a fraction of the frame's shorter side — see cornerRadius.ts.
+    borderRadius: DEFAULT_ROUNDNESS,
     // 0 = fall back to borderRadius. The "Video Corners" slider was removed —
     // the single Roundness slider (borderRadius) controls video sprite rounding.
     videoBorderRadius: 0,

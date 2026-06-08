@@ -1,5 +1,6 @@
 import { Application, Sprite, Graphics } from 'pixi.js';
 import type { CropRegion } from '../types';
+import { resolveCornerRadius } from '@/lib/cornerRadius';
 
 interface LayoutParams {
   container: HTMLDivElement;
@@ -109,10 +110,10 @@ export function layoutVideoContent(params: LayoutParams): LayoutResult | null {
   
   // Apply rounded-corner mask directly to the video sprite — this gives
   // Screen-Studio-style rounded video corners independent of the outer
-  // container framing. Clamp the radius so it never exceeds half the smaller
-  // side (otherwise PixiJS draws artifacts on narrow crops).
-  const maxRadius = Math.min(croppedDisplayWidth, croppedDisplayHeight) / 2;
-  const safeRadius = Math.max(0, Math.min(effectiveVideoRadius, maxRadius));
+  // container framing. The radius is a fraction of the displayed frame's
+  // shorter side (see cornerRadius.ts) so it stays visually consistent across
+  // crops and resolutions instead of collapsing on tight crops.
+  const safeRadius = resolveCornerRadius(effectiveVideoRadius, croppedDisplayWidth, croppedDisplayHeight);
   maskGraphics.clear();
   maskGraphics.roundRect(maskX, maskY, croppedDisplayWidth, croppedDisplayHeight, safeRadius);
   maskGraphics.fill({ color: 0xffffff });

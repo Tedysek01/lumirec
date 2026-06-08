@@ -5,6 +5,7 @@ import { Application, Container, Sprite, Graphics, BlurFilter, Texture, VideoSou
 import { type ZoomRegion, type ZoomFocus, type ZoomDepth, type TrimRegion, type AnnotationRegion, type SpotlightRegion, type VideoSegment, getSpotlightFadeOpacity } from "./types";
 import { findSegmentAtSourceTime } from "@/lib/segmentUtils";
 import { resolveTransformAtTime, resolveSpotlightAtTime } from "@/lib/keyframeInterpolation";
+import { resolveZoomCameraAtTime, findActiveZoomRegion, IDENTITY_CAMERA } from "@/lib/zoomCamera";
 import { DEFAULT_FOCUS } from "./videoPlayback/constants";
 import { clamp01 } from "./videoPlayback/mathUtils";
 import { clampFocusToStage as clampFocusToStageUtil } from "./videoPlayback/focusUtils";
@@ -716,10 +717,13 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
           const relativeTime = timeMs - seg.sourceStartMs;
           const resolved = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
 
-          // Extract zoom camera properties
-          zoomScale = resolved.zoom;
-          focusXVal = resolved.focusX;
-          focusYVal = resolved.focusY;
+          // Zoom/focus come from the active zoom region (single source of truth),
+          // NOT from keyframes. Manual keyframes only drive rotation/scale/position.
+          const activeRegion = findActiveZoomRegion(zoomRegionsRef.current, timeMs);
+          const cam = activeRegion ? resolveZoomCameraAtTime(activeRegion, timeMs) : IDENTITY_CAMERA;
+          zoomScale = cam.zoom;
+          focusXVal = cam.focusX;
+          focusYVal = cam.focusY;
 
           // Pass remaining transform properties if non-identity
           if (resolved.rotation !== 0 || resolved.scaleX !== 1 || resolved.scaleY !== 1 || resolved.positionX !== 0 || resolved.positionY !== 0) {
