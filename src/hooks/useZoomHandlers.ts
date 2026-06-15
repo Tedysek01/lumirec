@@ -4,24 +4,21 @@ import { v4 as uuidv4 } from "uuid";
 
 import {
   DEFAULT_TRANSITION_CONFIG,
-  ZOOM_DEPTH_SCALES,
   type ZoomDepth,
-  type ZoomFocus,
   type ZoomRegion,
-  type ZoomPanPoint,
+  type ZoomLayer,
+  type ZoomLayerKind,
   type VideoSegment,
 } from "@/components/video-editor/types";
-import {
-  resolveZoomCameraAtTime,
-  resolveHoldCameraAtRelTime,
-  clampPanPointTime,
-} from "@/lib/zoomCamera";
+import { resolveTransitionWindow, clampLayerToHold } from "@/lib/zoomCamera";
 import type { EditorStateSetter } from "./editorHandlerTypes";
 
 const DEFAULT_ENTER_MS = 400;
 const DEFAULT_EXIT_MS = 400;
-/** Snap window (ms) for matching an edit to an existing pan point. */
-const PAN_SNAP_MS = 50;
+/** Default ramp for a freshly added layer. */
+const DEFAULT_LAYER_RAMP_MS = 200;
+/** Default delta value for a freshly added zoom layer. */
+const DEFAULT_ZOOM_DELTA = 0.5;
 
 interface UseZoomHandlersArgs {
   setEditorState: EditorStateSetter;
@@ -30,28 +27,29 @@ interface UseZoomHandlersArgs {
   zoomRegions: ZoomRegion[];
   sourceTimeMs: number;
   selectedZoomId: string | null;
+  selectedZoomLayerId: string | null;
   nextZoomIdRef: React.MutableRefObject<number>;
   setSelectedZoomId: (id: string | null) => void;
+  setSelectedZoomLayerId: (id: string | null) => void;
   setSelectedTrimId: (id: string | null) => void;
   setSelectedAnnotationId: (id: string | null) => void;
 }
 
-/** Insert or update a pan point at a given region-relative time. */
-function upsertPanPoint(
-  points: ZoomPanPoint[],
-  timeMs: number,
-  focusX: number,
-  focusY: number,
-  zoom: number,
-  snapMs: number = PAN_SNAP_MS,
-): ZoomPanPoint[] {
-  const idx = points.findIndex((p) => Math.abs(p.timeMs - timeMs) <= snapMs);
-  if (idx >= 0) {
-    const updated = [...points];
-    updated[idx] = { ...updated[idx], timeMs, focusX, focusY, zoom };
-    return updated;
-  }
-  return [...points, { id: uuidv4(), timeMs, focusX, focusY, zoom }];
+/** Build a new layer spanning the region's hold window with sensible defaults. */
+function makeLayer(region: ZoomRegion, kind: ZoomLayerKind): ZoomLayer {
+  const { t2, t3 } = resolveTransitionWindow(region);
+  const holdStart = t2 - region.startMs;
+  const holdEnd = t3 - region.startMs;
+  const base: ZoomLayer = {
+    id: uuidv4(),
+    kind,
+    startMs: holdStart,
+    endMs: holdEnd,
+    enterMs: DEFAULT_LAYER_RAMP_MS,
+    exitMs: DEFAULT_LAYER_RAMP_MS,
+    ...(kind === 'zoom' ? { zoomDelta: DEFAULT_ZOOM_DELTA } : { focusDx: 0, focusDy: 0 }),
+  };
+  return clampLayerToHold(region, base);
 }
 
 export function useZoomHandlers({
@@ -60,8 +58,10 @@ export function useZoomHandlers({
   zoomRegions,
   sourceTimeMs,
   selectedZoomId,
+  selectedZoomLayerId,
   nextZoomIdRef,
   setSelectedZoomId,
+  setSelectedZoomLayerId,
   setSelectedTrimId,
   setSelectedAnnotationId,
 }: UseZoomHandlersArgs) {
@@ -77,13 +77,14 @@ export function useZoomHandlers({
       focus: { cx: 0.5, cy: 0.5 },
       enterTransition: { ...DEFAULT_TRANSITION_CONFIG, durationMs: DEFAULT_ENTER_MS },
       exitTransition: { ...DEFAULT_TRANSITION_CONFIG, durationMs: DEFAULT_EXIT_MS },
-      panPoints: [],
+      layers: [],
     };
     setEditorState((prev) => ({ ...prev, zoomRegions: [...prev.zoomRegions, newRegion] }));
     setSelectedZoomId(id);
+    setSelectedZoomLayerId(null);
     setSelectedTrimId(null);
     setSelectedAnnotationId(null);
-  }, [nextZoomIdRef, setEditorState, setSelectedZoomId, setSelectedTrimId, setSelectedAnnotationId]);
+  }, [nextZoomIdRef, setEditorState, setSelectedZoomId, setSelectedZoomLayerId, setSelectedTrimId, setSelectedAnnotationId]);
 
   const handleZoomSpanChange = useCallback((id: string, span: Span) => {
     setEditorState((prev) => ({
@@ -94,12 +95,8 @@ export function useZoomHandlers({
         const endMs = Math.round(span.end);
         if (startMs === r.startMs && endMs === r.endMs) return r;
         const updated: ZoomRegion = { ...r, startMs, endMs };
-        // Keep pan points inside the (possibly resized) hold window.
-        const panPoints = (r.panPoints ?? []).map((p) => ({
-          ...p,
-          timeMs: clampPanPointTime(updated, p.timeMs),
-        }));
-        return { ...updated, panPoints };
+        const layers = (r.layers ?? []).map((l) => clampLayerToHold(updated, l));
+        return { ...updated, layers };
       }),
     }));
   }, [setEditorState]);
@@ -119,7 +116,7 @@ export function useZoomHandlers({
       ...prev,
       zoomRegions: [
         ...prev.zoomRegions,
-        ...newRegions.map((r) => ({ ...r, panPoints: r.panPoints ?? [] })),
+        ...newRegions.map((r) => ({ ...r, layers: r.layers ?? [] })),
       ],
     }));
   }, [nextZoomIdRef, setEditorState]);
@@ -130,14 +127,7 @@ export function useZoomHandlers({
     if (!selectedZoomId) return;
     setEditorState((prev) => ({
       ...prev,
-      zoomRegions: prev.zoomRegions.map((r) => {
-        if (r.id !== selectedZoomId) return r;
-        const zoom = ZOOM_DEPTH_SCALES[depth];
-        // Depth sets the region's base zoom AND retargets every pan point so the
-        // slider is a quick "set the whole zoom level".
-        const panPoints = (r.panPoints ?? []).map((p) => ({ ...p, zoom }));
-        return { ...r, depth, panPoints };
-      }),
+      zoomRegions: prev.zoomRegions.map((r) => (r.id === selectedZoomId ? { ...r, depth } : r)),
     }));
   }, [selectedZoomId, setEditorState]);
 
@@ -152,150 +142,76 @@ export function useZoomHandlers({
           enterTransition: { ...DEFAULT_TRANSITION_CONFIG, durationMs: enterMs },
           exitTransition: { ...DEFAULT_TRANSITION_CONFIG, durationMs: exitMs },
         };
-        // Re-clamp pan points so none ends up inside the new transition ramps.
-        const panPoints = (r.panPoints ?? []).map((p) => ({
-          ...p,
-          timeMs: clampPanPointTime(updated, p.timeMs),
-        }));
-        return { ...updated, panPoints };
+        const layers = (r.layers ?? []).map((l) => clampLayerToHold(updated, l));
+        return { ...updated, layers };
       }),
     }));
   }, [selectedZoomId, setEditorState]);
 
-  // --- Focus / pan points ---
+  // --- Layer CRUD ---
 
-  const handleZoomFocusChange = useCallback((id: string, focus: ZoomFocus) => {
-    setEditorStateDebounced((prev) => {
-      const region = prev.zoomRegions.find((r) => r.id === id);
-      if (!region) return prev;
-      const inside = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
-      if (!inside) {
-        const points = region.panPoints ?? [];
-        if (points.length === 0) {
-          // No pan points — the base focus drives the implicit anchor.
-          return {
-            ...prev,
-            zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus } : r)),
-          };
-        }
-        // Pan points override the base focus, so aiming from outside the
-        // region retargets the nearest end of the path instead: before the
-        // region steer where the zoom enters, after it where it leaves.
-        const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
-        const target = sourceTimeMs < region.startMs ? sorted[0] : sorted[sorted.length - 1];
-        const panPoints = points.map((p) =>
-          p.id === target.id ? { ...p, focusX: focus.cx, focusY: focus.cy } : p,
-        );
-        return {
-          ...prev,
-          zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus, panPoints } : r)),
-        };
-      }
-      const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      // Zoom must come from the hold path, never from the enter/exit ramp the
-      // playhead may be sitting in — otherwise the pan point bakes in a
-      // half-ramped zoom and the region pans without zooming.
-      const cam = resolveHoldCameraAtRelTime(region, relTime);
-      const panPoints = upsertPanPoint(region.panPoints ?? [], relTime, focus.cx, focus.cy, cam.zoom);
-      return {
-        ...prev,
-        zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus, panPoints } : r)),
-      };
-    });
-  }, [setEditorStateDebounced, sourceTimeMs]);
-
-  const handleAddZoomPanPoint = useCallback((zoomRegionId: string) => {
+  const handleAddZoomLayer = useCallback((regionId: string, kind: ZoomLayerKind) => {
     setEditorState((prev) => {
-      const region = prev.zoomRegions.find((r) => r.id === zoomRegionId);
-      if (!region) return prev;
-      if (sourceTimeMs < region.startMs || sourceTimeMs > region.endMs) return prev;
-      const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      const cam = resolveHoldCameraAtRelTime(region, relTime);
-      const panPoints = upsertPanPoint(region.panPoints ?? [], relTime, cam.focusX, cam.focusY, cam.zoom);
-      return {
-        ...prev,
-        zoomRegions: prev.zoomRegions.map((r) => (r.id === zoomRegionId ? { ...r, panPoints } : r)),
-      };
+      let newId: string | null = null;
+      const zoomRegions = prev.zoomRegions.map((r) => {
+        if (r.id !== regionId) return r;
+        const layer = makeLayer(r, kind);
+        newId = layer.id;
+        return { ...r, layers: [...(r.layers ?? []), layer] };
+      });
+      if (newId) setSelectedZoomLayerId(newId);
+      return { ...prev, zoomRegions };
     });
-  }, [setEditorState, sourceTimeMs]);
+  }, [setEditorState, setSelectedZoomLayerId]);
 
-  // Duplicate the previous pan point's values at the playhead so the camera
-  // holds still between the two before moving on.
-  const handleHoldPanPoint = useCallback((zoomRegionId: string) => {
-    setEditorState((prev) => {
-      const region = prev.zoomRegions.find((r) => r.id === zoomRegionId);
-      if (!region) return prev;
-      if (sourceTimeMs < region.startMs || sourceTimeMs > region.endMs) return prev;
-      const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      const sorted = [...(region.panPoints ?? [])].sort((a, b) => a.timeMs - b.timeMs);
-      const prevPoint = sorted.filter((p) => p.timeMs < relTime - 5).pop();
-      const cam = resolveHoldCameraAtRelTime(region, relTime);
-      const fx = prevPoint?.focusX ?? cam.focusX;
-      const fy = prevPoint?.focusY ?? cam.focusY;
-      const z = prevPoint?.zoom ?? cam.zoom;
-      const panPoints = upsertPanPoint(region.panPoints ?? [], relTime, fx, fy, z);
-      return {
-        ...prev,
-        zoomRegions: prev.zoomRegions.map((r) => (r.id === zoomRegionId ? { ...r, panPoints } : r)),
-      };
-    });
-  }, [setEditorState, sourceTimeMs]);
-
-  const handleZoomPropertyChange = useCallback((property: "zoom" | "focusX" | "focusY", value: number) => {
-    if (!selectedZoomId) return;
-    setEditorStateDebounced((prev) => {
-      const region = prev.zoomRegions.find((r) => r.id === selectedZoomId);
-      if (!region) return prev;
-      const inside = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
-      if (!inside) return prev;
-      const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      const cam = resolveHoldCameraAtRelTime(region, relTime);
-      const next = {
-        focusX: property === "focusX" ? value : cam.focusX,
-        focusY: property === "focusY" ? value : cam.focusY,
-        zoom: property === "zoom" ? value : cam.zoom,
-      };
-      const panPoints = upsertPanPoint(region.panPoints ?? [], relTime, next.focusX, next.focusY, next.zoom);
-      return {
-        ...prev,
-        zoomRegions: prev.zoomRegions.map((r) => (r.id === selectedZoomId ? { ...r, panPoints } : r)),
-      };
-    });
-  }, [selectedZoomId, setEditorStateDebounced, sourceTimeMs]);
-
-  // --- Timeline pan-point drag/delete (region-based) ---
-
-  /** Clamp a candidate pan-point time (region-relative) into the safe hold window. */
-  const clampZoomPanPointTime = useCallback((regionId: string, relTimeMs: number): number => {
-    const region = zoomRegions.find((r) => r.id === regionId);
-    if (!region) return relTimeMs;
-    return clampPanPointTime(region, relTimeMs);
-  }, [zoomRegions]);
-
-  const handleMoveZoomPanPoint = useCallback((regionId: string, oldRelTimeMs: number, newRelTimeMs: number) => {
+  const handleUpdateZoomLayer = useCallback((regionId: string, layerId: string, patch: Partial<ZoomLayer>) => {
     setEditorStateDebounced((prev) => ({
       ...prev,
       zoomRegions: prev.zoomRegions.map((r) => {
         if (r.id !== regionId) return r;
-        const clamped = clampPanPointTime(r, newRelTimeMs);
-        const panPoints = (r.panPoints ?? []).map((p) =>
-          Math.abs(p.timeMs - oldRelTimeMs) <= 5 ? { ...p, timeMs: clamped } : p,
-        );
-        return { ...r, panPoints };
+        const layers = (r.layers ?? []).map((l) => (l.id === layerId ? { ...l, ...patch } : l));
+        return { ...r, layers };
       }),
     }));
   }, [setEditorStateDebounced]);
 
-  const handleDeleteZoomPanPoint = useCallback((regionId: string, relTimeMs: number) => {
-    setEditorState((prev) => ({
+  const handleResizeZoomLayer = useCallback((regionId: string, layerId: string, startMs: number, endMs: number) => {
+    setEditorStateDebounced((prev) => ({
       ...prev,
       zoomRegions: prev.zoomRegions.map((r) => {
         if (r.id !== regionId) return r;
-        const panPoints = (r.panPoints ?? []).filter((p) => Math.abs(p.timeMs - relTimeMs) > 5);
-        return { ...r, panPoints };
+        const layers = (r.layers ?? []).map((l) =>
+          l.id === layerId ? clampLayerToHold(r, { ...l, startMs, endMs }) : l,
+        );
+        return { ...r, layers };
       }),
     }));
-  }, [setEditorState]);
+  }, [setEditorStateDebounced]);
+
+  const handleMoveZoomLayer = useCallback((regionId: string, layerId: string, newStartMs: number) => {
+    setEditorStateDebounced((prev) => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((r) => {
+        if (r.id !== regionId) return r;
+        const layers = (r.layers ?? []).map((l) => {
+          if (l.id !== layerId) return l;
+          const dur = l.endMs - l.startMs;
+          return clampLayerToHold(r, { ...l, startMs: newStartMs, endMs: newStartMs + dur });
+        });
+        return { ...r, layers };
+      }),
+    }));
+  }, [setEditorStateDebounced]);
+
+  const handleDeleteZoomLayer = useCallback((regionId: string, layerId: string) => {
+    setEditorState((prev) => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((r) =>
+        r.id === regionId ? { ...r, layers: (r.layers ?? []).filter((l) => l.id !== layerId) } : r,
+      ),
+    }));
+    if (selectedZoomLayerId === layerId) setSelectedZoomLayerId(null);
+  }, [setEditorState, selectedZoomLayerId, setSelectedZoomLayerId]);
 
   // --- Derived state for SettingsPanel ---
 
@@ -309,27 +225,24 @@ export function useZoomHandlers({
     return sourceTimeMs >= selectedRegion.startMs && sourceTimeMs <= selectedRegion.endMs;
   }, [selectedRegion, sourceTimeMs]);
 
-  const activeZoomTransform = useMemo(() => {
-    if (!selectedRegion || !playheadInsideSelectedZoom) return null;
-    const cam = resolveZoomCameraAtTime(selectedRegion, sourceTimeMs);
-    return { zoom: cam.zoom, focusX: cam.focusX, focusY: cam.focusY };
-  }, [selectedRegion, playheadInsideSelectedZoom, sourceTimeMs]);
+  const selectedLayer = useMemo(() => {
+    if (!selectedRegion || !selectedZoomLayerId) return null;
+    return (selectedRegion.layers ?? []).find((l) => l.id === selectedZoomLayerId) ?? null;
+  }, [selectedRegion, selectedZoomLayerId]);
 
   return {
     handleZoomAdded,
     handleZoomSpanChange,
-    handleZoomFocusChange,
     handleZoomDepthChange,
     handleZoomTransitionChange,
     handleZoomDelete,
     handleAutoZoomApply,
-    handleAddZoomPanPoint,
-    handleHoldPanPoint,
-    handleZoomPropertyChange,
-    handleMoveZoomPanPoint,
-    handleDeleteZoomPanPoint,
-    clampZoomPanPointTime,
+    handleAddZoomLayer,
+    handleUpdateZoomLayer,
+    handleResizeZoomLayer,
+    handleMoveZoomLayer,
+    handleDeleteZoomLayer,
     playheadInsideSelectedZoom,
-    activeZoomTransform,
+    selectedLayer,
   };
 }
