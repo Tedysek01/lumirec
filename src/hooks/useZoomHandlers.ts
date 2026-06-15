@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from "uuid";
 import {
   DEFAULT_TRANSITION_CONFIG,
   type ZoomDepth,
+  type ZoomFocus,
   type ZoomRegion,
   type ZoomLayer,
   type ZoomLayerKind,
@@ -146,6 +147,16 @@ export function useZoomHandlers({
     }));
   }, [selectedZoomId, setEditorState]);
 
+  // Aim the base zoom: dragging the focus in the preview sets the region's
+  // base focus directly (debounced for smooth dragging). This is how a zoom is
+  // pointed at a spot instead of always centering.
+  const handleZoomFocusChange = useCallback((id: string, focus: ZoomFocus) => {
+    setEditorStateDebounced((prev) => ({
+      ...prev,
+      zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus } : r)),
+    }));
+  }, [setEditorStateDebounced]);
+
   // --- Layer CRUD ---
 
   const handleAddZoomLayer = useCallback((regionId: string, kind: ZoomLayerKind) => {
@@ -232,6 +243,7 @@ export function useZoomHandlers({
     handleZoomSpanChange,
     handleZoomDepthChange,
     handleZoomTransitionChange,
+    handleZoomFocusChange,
     handleZoomDelete,
     handleAutoZoomApply,
     handleAddZoomLayer,

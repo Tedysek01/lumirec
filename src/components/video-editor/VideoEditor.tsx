@@ -400,6 +400,7 @@ export default function VideoEditor() {
     handleZoomSpanChange,
     handleZoomDepthChange,
     handleZoomTransitionChange,
+    handleZoomFocusChange,
     handleZoomDelete,
     handleAutoZoomApply,
     handleAddZoomLayer,
@@ -1128,6 +1129,7 @@ export default function VideoEditor() {
                       zoomRegions={zoomRegions}
                       selectedZoomId={selectedZoomId}
                       onSelectZoom={handleSelectZoom}
+                      onZoomFocusChange={handleZoomFocusChange}
                       isPlaying={isPlaying}
                       showShadow={shadowIntensity > 0}
                       shadowIntensity={shadowIntensity}
