@@ -10,6 +10,8 @@ import Item from "./Item";
 import VideoSegmentItem from "./VideoSegmentItem";
 import KeyframeTrack from "./KeyframeTrack";
 import ZoomLayerLane from "./ZoomLayerLane";
+import ZoomTrackLabel from "./ZoomTrackLabel";
+import { zoomRowHeight, BASE_ZOOM_ROW_H } from "./zoomLayerLayout";
 import TrackLabel from "./TrackLabel";
 import WaveformRow from "./WaveformRow";
 import type { Range, Span } from "dnd-timeline";
@@ -100,6 +102,7 @@ interface TimelineEditorProps {
   onMoveKeyframesAtTime?: (segmentId: string, oldTimeMs: number, newTimeMs: number) => void;
   selectedZoomLayerId: string | null;
   onSelectZoomLayer: (layerId: string | null) => void;
+  onAddZoomLayer: (regionId: string, kind: import("../types").ZoomLayerKind) => void;
   onMoveZoomLayer: (regionId: string, layerId: string, newStartMs: number) => void;
   onResizeZoomLayer: (regionId: string, layerId: string, startMs: number, endMs: number) => void;
   onDeleteZoomLayer: (regionId: string, layerId: string) => void;
@@ -471,6 +474,8 @@ function Timeline({
   onToggleTrack,
   timelineContentRef,
   videoPath,
+  zoomRowHeightPx,
+  zoomTrackLabel,
 }: {
   items: TimelineRenderItem[];
   videoDurationMs: number;
@@ -498,6 +503,8 @@ function Timeline({
   onToggleTrack?: (trackId: string) => void;
   timelineContentRef?: React.MutableRefObject<HTMLDivElement | null>;
   videoPath?: string | null;
+  zoomRowHeightPx: number;
+  zoomTrackLabel: React.ReactNode;
 }) {
   const { setTimelineRef, style, sidebarWidth, range, pixelsToValue } = useTimelineContext();
   const localTimelineRef = useRef<HTMLDivElement | null>(null);
@@ -555,14 +562,7 @@ function Timeline({
           collapsed={collapsedTracks?.has(VIDEO_ROW_ID)}
           onToggleCollapse={() => onToggleTrack?.(VIDEO_ROW_ID)}
         />
-        <TrackLabel
-          label="Zoom"
-          icon={<ZoomIn className="w-3.5 h-3.5" />}
-          accentColor="#3B82F6"
-          height={TRACK_HEIGHTS[ZOOM_ROW_ID]}
-          collapsed={collapsedTracks?.has(ZOOM_ROW_ID)}
-          onToggleCollapse={() => onToggleTrack?.(ZOOM_ROW_ID)}
-        />
+        {zoomTrackLabel}
         <TrackLabel
           label="Spotlight"
           icon={<Lightbulb className="w-3.5 h-3.5" />}
@@ -642,7 +642,7 @@ function Timeline({
           {videoKeyframeOverlays}
         </Row>
 
-        <Row id={ZOOM_ROW_ID} height={TRACK_HEIGHTS[ZOOM_ROW_ID]} collapsed={collapsedTracks?.has(ZOOM_ROW_ID)}>
+        <Row id={ZOOM_ROW_ID} height={zoomRowHeightPx} collapsed={collapsedTracks?.has(ZOOM_ROW_ID)}>
           {zoomItems.map((item) => (
             <Item
               id={item.id}
@@ -771,6 +771,7 @@ export default function TimelineEditor({
   onMoveKeyframesAtTime,
   selectedZoomLayerId,
   onSelectZoomLayer,
+  onAddZoomLayer,
   onMoveZoomLayer,
   onResizeZoomLayer,
   onDeleteZoomLayer,
@@ -1224,6 +1225,22 @@ export default function TimelineEditor({
     );
   }
 
+  // Zoom row grows to always show every region's stacked layer lanes.
+  const zoomRowHeightPx = zoomRowHeight(zoomRegions);
+  // A new layer attaches to the selected region, or the only region if just one.
+  const addTargetRegionId = selectedZoomId ?? (zoomRegions.length === 1 ? zoomRegions[0].id : null);
+  const zoomTrackLabel = (
+    <ZoomTrackLabel
+      accentColor="#3B82F6"
+      collapsed={collapsedTracks?.has(ZOOM_ROW_ID)}
+      onToggleCollapse={() => toggleTrack(ZOOM_ROW_ID)}
+      height={zoomRowHeightPx}
+      headerHeight={BASE_ZOOM_ROW_H}
+      addTargetRegionId={addTargetRegionId}
+      onAddLayer={onAddZoomLayer}
+    />
+  );
+
   return (
     <div className="flex-1 flex flex-col bg-background overflow-hidden font-sans">
       <div className="flex items-center gap-2 px-4 py-2 border-b border-border/30 bg-background">
@@ -1382,6 +1399,8 @@ export default function TimelineEditor({
             onToggleTrack={toggleTrack}
             timelineContentRef={timelineContentRef}
             videoPath={videoPath}
+            zoomRowHeightPx={zoomRowHeightPx}
+            zoomTrackLabel={zoomTrackLabel}
             videoKeyframeOverlays={videoSegments.map(segment => (
               <KeyframeTrack
                 key={`kf-manual-${segment.id}`}
@@ -1413,22 +1432,16 @@ export default function TimelineEditor({
               ) : undefined
             }
           >
-            {(() => {
-              const selected = zoomRegions.find((r) => r.id === selectedZoomId);
-              if (!selected) return null;
-              return (
-                <ZoomLayerLane
-                  region={selected}
-                  videoSegments={videoSegments}
-                  selectedLayerId={selectedZoomLayerId}
-                  onSelectLayer={onSelectZoomLayer}
-                  onMoveLayer={onMoveZoomLayer}
-                  onResizeLayer={onResizeZoomLayer}
-                  onDeleteLayer={onDeleteZoomLayer}
-                  timelineRef={timelineContentRef}
-                />
-              );
-            })()}
+            <ZoomLayerLane
+              regions={zoomRegions}
+              videoSegments={videoSegments}
+              selectedLayerId={selectedZoomLayerId}
+              onSelectLayer={(regionId, layerId) => { onSelectZoom?.(regionId); onSelectZoomLayer(layerId); }}
+              onMoveLayer={onMoveZoomLayer}
+              onResizeLayer={onResizeZoomLayer}
+              onDeleteLayer={onDeleteZoomLayer}
+              timelineRef={timelineContentRef}
+            />
           </Timeline>
         </TimelineWrapper>
       </div>

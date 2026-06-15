@@ -1239,6 +1239,7 @@ export default function VideoEditor() {
               onMoveKeyframesAtTime={handleMoveKeyframesAtTime}
               selectedZoomLayerId={selectedZoomLayerId}
               onSelectZoomLayer={setSelectedZoomLayerId}
+              onAddZoomLayer={handleAddZoomLayer}
               onMoveZoomLayer={handleMoveZoomLayer}
               onResizeZoomLayer={handleResizeZoomLayer}
               onDeleteZoomLayer={handleDeleteZoomLayer}
