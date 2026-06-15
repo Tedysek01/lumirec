@@ -151,17 +151,17 @@ export function useZoomHandlers({
   // --- Layer CRUD ---
 
   const handleAddZoomLayer = useCallback((regionId: string, kind: ZoomLayerKind) => {
+    let newId: string | null = null;
     setEditorState((prev) => {
-      let newId: string | null = null;
       const zoomRegions = prev.zoomRegions.map((r) => {
         if (r.id !== regionId) return r;
         const layer = makeLayer(r, kind);
         newId = layer.id;
         return { ...r, layers: [...(r.layers ?? []), layer] };
       });
-      if (newId) setSelectedZoomLayerId(newId);
       return { ...prev, zoomRegions };
     });
+    if (newId) setSelectedZoomLayerId(newId);
   }, [setEditorState, setSelectedZoomLayerId]);
 
   const handleUpdateZoomLayer = useCallback((regionId: string, layerId: string, patch: Partial<ZoomLayer>) => {
@@ -169,7 +169,11 @@ export function useZoomHandlers({
       ...prev,
       zoomRegions: prev.zoomRegions.map((r) => {
         if (r.id !== regionId) return r;
-        const layers = (r.layers ?? []).map((l) => (l.id === layerId ? { ...l, ...patch } : l));
+        const layers = (r.layers ?? []).map((l) => {
+          if (l.id !== layerId) return l;
+          const merged = { ...l, ...patch };
+          return ('startMs' in patch || 'endMs' in patch) ? clampLayerToHold(r, merged) : merged;
+        });
         return { ...r, layers };
       }),
     }));
