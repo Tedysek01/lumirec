@@ -25,7 +25,6 @@ interface UseZoomHandlersArgs {
   setEditorStateDebounced: EditorStateSetter;
   videoSegments: VideoSegment[];
   zoomRegions: ZoomRegion[];
-  sourceTimeMs: number;
   selectedZoomId: string | null;
   selectedZoomLayerId: string | null;
   nextZoomIdRef: React.MutableRefObject<number>;
@@ -56,7 +55,6 @@ export function useZoomHandlers({
   setEditorState,
   setEditorStateDebounced,
   zoomRegions,
-  sourceTimeMs,
   selectedZoomId,
   selectedZoomLayerId,
   nextZoomIdRef,
@@ -224,11 +222,6 @@ export function useZoomHandlers({
     [selectedZoomId, zoomRegions],
   );
 
-  const playheadInsideSelectedZoom = useMemo(() => {
-    if (!selectedRegion) return false;
-    return sourceTimeMs >= selectedRegion.startMs && sourceTimeMs <= selectedRegion.endMs;
-  }, [selectedRegion, sourceTimeMs]);
-
   const selectedLayer = useMemo(() => {
     if (!selectedRegion || !selectedZoomLayerId) return null;
     return (selectedRegion.layers ?? []).find((l) => l.id === selectedZoomLayerId) ?? null;
@@ -246,7 +239,6 @@ export function useZoomHandlers({
     handleResizeZoomLayer,
     handleMoveZoomLayer,
     handleDeleteZoomLayer,
-    playheadInsideSelectedZoom,
     selectedLayer,
   };
 }

@@ -77,6 +77,10 @@ export default function VideoEditor() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
+  // Mirror selectedZoomId in a ref so handlers can compare against the current
+  // selection without a stale closure or churning their dependency arrays.
+  const selectedZoomIdRef = useRef<string | null>(null);
+  useEffect(() => { selectedZoomIdRef.current = selectedZoomId; }, [selectedZoomId]);
   const [selectedZoomLayerId, setSelectedZoomLayerId] = useState<string | null>(null);
   const [selectedTrimId, setSelectedTrimId] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
@@ -341,11 +345,11 @@ export default function VideoEditor() {
   }
 
   const handleSelectZoom = useCallback((id: string | null) => {
-    setSelectedZoomId((prev) => {
-      // Clear stale layer selection when switching to a different region (or deselecting)
-      if (prev !== id) setSelectedZoomLayerId(null);
-      return id;
-    });
+    // Clear stale layer selection when switching to a different region (or deselecting).
+    // Compared against a ref so this stays a plain sibling call, not a side effect
+    // nested inside the state updater (which would violate React's purity contract).
+    if (id !== selectedZoomIdRef.current) setSelectedZoomLayerId(null);
+    setSelectedZoomId(id);
     if (id) {
       setSelectedTrimId(null);
       setSelectedAnnotationId(null);
@@ -409,7 +413,6 @@ export default function VideoEditor() {
     setEditorStateDebounced,
     videoSegments,
     zoomRegions,
-    sourceTimeMs,
     selectedZoomId,
     selectedZoomLayerId,
     nextZoomIdRef,
