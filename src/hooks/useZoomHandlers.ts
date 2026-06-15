@@ -14,10 +14,10 @@ import {
 import { resolveTransitionWindow, clampLayerToHold } from "@/lib/zoomCamera";
 import type { EditorStateSetter } from "./editorHandlerTypes";
 
-const DEFAULT_ENTER_MS = 400;
-const DEFAULT_EXIT_MS = 400;
-/** Default ramp for a freshly added layer. */
-const DEFAULT_LAYER_RAMP_MS = 200;
+const DEFAULT_ENTER_MS = 800;
+const DEFAULT_EXIT_MS = 800;
+/** Default ramp for a freshly added layer (zoom-change / position-change). */
+const DEFAULT_LAYER_RAMP_MS = 800;
 /** Default delta value for a freshly added zoom layer. */
 const DEFAULT_ZOOM_DELTA = 0.5;
 

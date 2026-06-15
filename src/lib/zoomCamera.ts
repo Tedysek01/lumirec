@@ -24,7 +24,7 @@ export interface ZoomCamera {
 
 export const IDENTITY_CAMERA: ZoomCamera = { zoom: 1, focusX: 0.5, focusY: 0.5 };
 
-const DEFAULT_TRANSITION_MS = 400;
+const DEFAULT_TRANSITION_MS = 800;
 
 /** Apple-style smooth cubic ease-in-out. */
 function easeInOut(t: number): number {
