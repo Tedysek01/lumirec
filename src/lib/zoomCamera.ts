@@ -91,6 +91,31 @@ export function getZoomAnchors(region: ZoomRegion): { timeMs: number; cam: ZoomC
 }
 
 /**
+ * Camera prescribed by the hold path itself at a region-relative time,
+ * ignoring the enter/exit ramps. This is the value a pan point inserted at
+ * that time must carry — sampling resolveZoomCameraAtTime instead would bake
+ * a half-ramped (or identity) zoom into the path, leaving the region panning
+ * without ever zooming in.
+ */
+export function resolveHoldCameraAtRelTime(region: ZoomRegion, relTimeMs: number): ZoomCamera {
+  const anchors = getZoomAnchors(region);
+  const first = anchors[0];
+  const last = anchors[anchors.length - 1];
+  if (relTimeMs <= first.timeMs) return first.cam;
+  if (relTimeMs >= last.timeMs) return last.cam;
+  for (let i = 0; i < anchors.length - 1; i++) {
+    const a = anchors[i];
+    const b = anchors[i + 1];
+    if (relTimeMs >= a.timeMs && relTimeMs <= b.timeMs) {
+      const span = Math.max(1, b.timeMs - a.timeMs);
+      const t = (relTimeMs - a.timeMs) / span;
+      return lerpCamera(a.cam, b.cam, Math.max(0, Math.min(1, t)));
+    }
+  }
+  return last.cam;
+}
+
+/**
  * Resolve the camera (zoom + focus) for a region at an absolute source time.
  * Returns identity when the time is outside the region.
  */
@@ -103,9 +128,6 @@ export function resolveZoomCameraAtTime(region: ZoomRegion, sourceTimeMs: number
   const anchors = getZoomAnchors(region);
   const first = anchors[0];
   const last = anchors[anchors.length - 1];
-  const rel = sourceTimeMs - region.startMs;
-  const t2Rel = t2 - region.startMs;
-  const t3Rel = t3 - region.startMs;
 
   // Ramp in: identity → first anchor.
   if (sourceTimeMs <= t2) {
@@ -122,20 +144,7 @@ export function resolveZoomCameraAtTime(region: ZoomRegion, sourceTimeMs: number
   }
 
   // Hold: interpolate across pan anchors by their time.
-  if (rel <= first.timeMs) return first.cam;
-  if (rel >= last.timeMs) return last.cam;
-  for (let i = 0; i < anchors.length - 1; i++) {
-    const a = anchors[i];
-    const b = anchors[i + 1];
-    if (rel >= a.timeMs && rel <= b.timeMs) {
-      const span = Math.max(1, b.timeMs - a.timeMs);
-      const t = (rel - a.timeMs) / span;
-      return lerpCamera(a.cam, b.cam, Math.max(0, Math.min(1, t)));
-    }
-  }
-  // Fallback (shouldn't hit): clamp within hold window.
-  void t2Rel; void t3Rel;
-  return last.cam;
+  return resolveHoldCameraAtRelTime(region, sourceTimeMs - region.startMs);
 }
 
 /**

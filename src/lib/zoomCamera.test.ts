@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveZoomCameraAtTime,
+  resolveHoldCameraAtRelTime,
   resolveTransitionWindow,
   getZoomAnchors,
   clampPanPointTime,
@@ -97,6 +98,50 @@ describe('resolveZoomCameraAtTime', () => {
     const late = makeRegion({ panPoints: [{ id: 'p1', timeMs: 1500, focusX: 0.7, focusY: 0.3, zoom: 2 }] });
     // At t2 (source 1400) the zoom-in has completed to the anchor zoom in BOTH cases.
     expect(resolveZoomCameraAtTime(early, 1400).zoom).toBeCloseTo(resolveZoomCameraAtTime(late, 1400).zoom, 5);
+  });
+});
+
+describe('resolveHoldCameraAtRelTime', () => {
+  it('returns the full hold zoom even at the hold start (never a ramp value)', () => {
+    const r = makeRegion();
+    // Hold window starts at rel 400 (+MIN_PAN_OFFSET); a pan point created while
+    // the playhead sits in the enter ramp gets clamped to the hold start. Its
+    // camera must carry the FULL depth zoom, not the half-ramped one.
+    const relTime = clampPanPointTime(r, 0);
+    const cam = resolveHoldCameraAtRelTime(r, relTime);
+    expect(cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
+    expect(cam.focusX).toBeCloseTo(0.5, 5);
+  });
+
+  it('returns full zoom at the region start boundary too', () => {
+    const r = makeRegion();
+    // resolveZoomCameraAtTime at startMs is identity (zoom 1); the hold camera
+    // for a pan point must not be.
+    expect(resolveZoomCameraAtTime(r, r.startMs).zoom).toBe(1);
+    const cam = resolveHoldCameraAtRelTime(r, clampPanPointTime(r, 0));
+    expect(cam.zoom).toBeGreaterThan(1.5);
+  });
+
+  it('interpolates between pan points by relative time', () => {
+    const r = makeRegion({
+      panPoints: [
+        { id: 'p1', timeMs: 600, focusX: 0.2, focusY: 0.5, zoom: 2 },
+        { id: 'p2', timeMs: 1400, focusX: 0.8, focusY: 0.5, zoom: 3 },
+      ],
+    });
+    const cam = resolveHoldCameraAtRelTime(r, 1000); // midpoint
+    expect(cam.focusX).toBeGreaterThan(0.2);
+    expect(cam.focusX).toBeLessThan(0.8);
+    expect(cam.zoom).toBeGreaterThan(2);
+    expect(cam.zoom).toBeLessThan(3);
+  });
+
+  it('clamps to the first/last anchor outside the anchor span', () => {
+    const r = makeRegion({
+      panPoints: [{ id: 'p1', timeMs: 1000, focusX: 0.7, focusY: 0.3, zoom: 2.5 }],
+    });
+    expect(resolveHoldCameraAtRelTime(r, 0).zoom).toBeCloseTo(2.5, 5);
+    expect(resolveHoldCameraAtRelTime(r, 99999).zoom).toBeCloseTo(2.5, 5);
   });
 });
 

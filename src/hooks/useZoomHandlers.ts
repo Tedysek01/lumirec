@@ -13,6 +13,7 @@ import {
 } from "@/components/video-editor/types";
 import {
   resolveZoomCameraAtTime,
+  resolveHoldCameraAtRelTime,
   clampPanPointTime,
 } from "@/lib/zoomCamera";
 import type { EditorStateSetter } from "./editorHandlerTypes";
@@ -169,14 +170,32 @@ export function useZoomHandlers({
       if (!region) return prev;
       const inside = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
       if (!inside) {
-        // Outside the hold — just steer the base focus.
+        const points = region.panPoints ?? [];
+        if (points.length === 0) {
+          // No pan points — the base focus drives the implicit anchor.
+          return {
+            ...prev,
+            zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus } : r)),
+          };
+        }
+        // Pan points override the base focus, so aiming from outside the
+        // region retargets the nearest end of the path instead: before the
+        // region steer where the zoom enters, after it where it leaves.
+        const sorted = [...points].sort((a, b) => a.timeMs - b.timeMs);
+        const target = sourceTimeMs < region.startMs ? sorted[0] : sorted[sorted.length - 1];
+        const panPoints = points.map((p) =>
+          p.id === target.id ? { ...p, focusX: focus.cx, focusY: focus.cy } : p,
+        );
         return {
           ...prev,
-          zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus } : r)),
+          zoomRegions: prev.zoomRegions.map((r) => (r.id === id ? { ...r, focus, panPoints } : r)),
         };
       }
       const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      const cam = resolveZoomCameraAtTime(region, sourceTimeMs);
+      // Zoom must come from the hold path, never from the enter/exit ramp the
+      // playhead may be sitting in — otherwise the pan point bakes in a
+      // half-ramped zoom and the region pans without zooming.
+      const cam = resolveHoldCameraAtRelTime(region, relTime);
       const panPoints = upsertPanPoint(region.panPoints ?? [], relTime, focus.cx, focus.cy, cam.zoom);
       return {
         ...prev,
@@ -191,7 +210,7 @@ export function useZoomHandlers({
       if (!region) return prev;
       if (sourceTimeMs < region.startMs || sourceTimeMs > region.endMs) return prev;
       const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      const cam = resolveZoomCameraAtTime(region, sourceTimeMs);
+      const cam = resolveHoldCameraAtRelTime(region, relTime);
       const panPoints = upsertPanPoint(region.panPoints ?? [], relTime, cam.focusX, cam.focusY, cam.zoom);
       return {
         ...prev,
@@ -210,7 +229,7 @@ export function useZoomHandlers({
       const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
       const sorted = [...(region.panPoints ?? [])].sort((a, b) => a.timeMs - b.timeMs);
       const prevPoint = sorted.filter((p) => p.timeMs < relTime - 5).pop();
-      const cam = resolveZoomCameraAtTime(region, sourceTimeMs);
+      const cam = resolveHoldCameraAtRelTime(region, relTime);
       const fx = prevPoint?.focusX ?? cam.focusX;
       const fy = prevPoint?.focusY ?? cam.focusY;
       const z = prevPoint?.zoom ?? cam.zoom;
@@ -230,7 +249,7 @@ export function useZoomHandlers({
       const inside = sourceTimeMs >= region.startMs && sourceTimeMs <= region.endMs;
       if (!inside) return prev;
       const relTime = clampPanPointTime(region, sourceTimeMs - region.startMs);
-      const cam = resolveZoomCameraAtTime(region, sourceTimeMs);
+      const cam = resolveHoldCameraAtRelTime(region, relTime);
       const next = {
         focusX: property === "focusX" ? value : cam.focusX,
         focusY: property === "focusY" ? value : cam.focusY,
