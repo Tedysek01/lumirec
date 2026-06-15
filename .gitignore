@@ -30,3 +30,6 @@ release/**
 scripts/
 *.py
 .claude/
+
+# Brainstorming visual companion
+.superpowers/
