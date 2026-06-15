@@ -115,9 +115,23 @@ export function layerWeight(layer: ZoomLayer, relTimeMs: number): number {
 }
 
 /**
+ * Position-layer weight: eases 0→1 across the layer's span, then PERSISTS at 1
+ * for the rest of the region. A position layer moves the framing and keeps it —
+ * it does not snap back to the base focus when the bar ends. The region's own
+ * zoom-out ramp is what eventually carries the camera out, from the moved spot.
+ */
+export function positionLayerWeight(layer: ZoomLayer, relTimeMs: number): number {
+  if (relTimeMs <= layer.startMs) return 0;
+  if (relTimeMs >= layer.endMs) return 1;
+  const dur = Math.max(1, layer.endMs - layer.startMs);
+  return easeInOut(clamp((relTimeMs - layer.startMs) / dur, 0, 1));
+}
+
+/**
  * Resolve the camera (zoom + focus) for a region at an absolute source time:
  * the base ramp plus the sum of every active layer's ramped delta. Identity
- * outside the region.
+ * outside the region. Zoom layers ramp in AND out (a temporary push); position
+ * layers ramp in and then hold, so a reframing persists until the zoom-out.
  */
 export function resolveZoomCameraAtTime(region: ZoomRegion, sourceTimeMs: number): ZoomCamera {
   if (sourceTimeMs <= region.startMs || sourceTimeMs >= region.endMs) {
@@ -126,11 +140,13 @@ export function resolveZoomCameraAtTime(region: ZoomRegion, sourceTimeMs: number
   const cam = resolveBaseCameraAtTime(region, sourceTimeMs);
   const relTime = sourceTimeMs - region.startMs;
   for (const layer of region.layers ?? []) {
-    const w = layerWeight(layer, relTime);
-    if (w <= 0) continue;
     if (layer.kind === 'zoom') {
+      const w = layerWeight(layer, relTime);
+      if (w <= 0) continue;
       cam.zoom += (layer.zoomDelta ?? 0) * w;
     } else {
+      const w = positionLayerWeight(layer, relTime);
+      if (w <= 0) continue;
       cam.focusX += (layer.focusDx ?? 0) * w;
       cam.focusY += (layer.focusDy ?? 0) * w;
     }

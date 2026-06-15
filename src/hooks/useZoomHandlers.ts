@@ -40,11 +40,15 @@ function makeLayer(region: ZoomRegion, kind: ZoomLayerKind): ZoomLayer {
   const { t2, t3 } = resolveTransitionWindow(region);
   const holdStart = t2 - region.startMs;
   const holdEnd = t3 - region.startMs;
+  // A zoom layer is a temporary push over the whole hold (ramp in AND out).
+  // A position layer is a reframing: its bar is just the pan duration, after
+  // which the move persists — so it defaults to a short span, not the whole hold.
+  const endMs = kind === 'zoom' ? holdEnd : Math.min(holdEnd, holdStart + DEFAULT_LAYER_RAMP_MS);
   const base: ZoomLayer = {
     id: uuidv4(),
     kind,
     startMs: holdStart,
-    endMs: holdEnd,
+    endMs,
     enterMs: DEFAULT_LAYER_RAMP_MS,
     exitMs: DEFAULT_LAYER_RAMP_MS,
     ...(kind === 'zoom' ? { zoomDelta: DEFAULT_ZOOM_DELTA } : { focusDx: 0, focusDy: 0 }),

@@ -127,8 +127,9 @@ describe('resolveZoomCameraAtTime', () => {
   });
 
   it('offsets focus with a position layer, clamped to [0,1]', () => {
+    // Pan completes by rel 600; sampled well past it (rel 1000) → full offset.
     const r = makeRegion({
-      layers: [zoomLayer({ kind: 'position', zoomDelta: undefined, focusDx: -0.3, focusDy: -0.2 })],
+      layers: [zoomLayer({ kind: 'position', zoomDelta: undefined, startMs: 400, endMs: 600, focusDx: -0.3, focusDy: -0.2 })],
     });
     const cam = resolveZoomCameraAtTime(r, 2000);
     expect(cam.focusX).toBeCloseTo(0.2, 5);
@@ -136,7 +137,24 @@ describe('resolveZoomCameraAtTime', () => {
     expect(cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5); // position layer leaves zoom alone
   });
 
-  it('ignores a layer whose weight is 0 at the sampled time', () => {
+  it('keeps a position layer offset after its bar ends (persists, no snap back)', () => {
+    // Pan bar is rel [400..600]; at rel 1000 (source 2000), long past the end,
+    // the reframing must still be fully applied — it does not return to base.
+    const r = makeRegion({
+      layers: [zoomLayer({ kind: 'position', zoomDelta: undefined, startMs: 400, endMs: 600, focusDx: -0.3, focusDy: 0 })],
+    });
+    expect(resolveZoomCameraAtTime(r, 2000).focusX).toBeCloseTo(0.2, 5);
+    // and still applied right before the region's zoom-out begins (t3 = rel 1600)
+    expect(resolveZoomCameraAtTime(r, 2590).focusX).toBeLessThan(0.5);
+  });
+
+  it('still returns a zoom layer to zero after its bar ends', () => {
+    const r = makeRegion({ layers: [zoomLayer({ kind: 'zoom', startMs: 400, endMs: 600, zoomDelta: 0.8 })] });
+    // rel 1000 (source 2000) is past the zoom layer end → no added zoom.
+    expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
+  });
+
+  it('ignores a zoom layer whose weight is 0 at the sampled time', () => {
     const r = makeRegion({ layers: [zoomLayer({ startMs: 500, endMs: 700 })] });
     expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
   });

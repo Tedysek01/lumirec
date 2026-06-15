@@ -149,6 +149,24 @@ export default function ZoomLayerLane({
           const color = KIND_COLOR[layer.kind];
           const isSelected = layer.id === selectedLayerId;
           const barTop = BASE_ZOOM_ROW_H + i * LAYER_LANE_H + (LAYER_LANE_H - BAR_H) / 2;
+          // Position layers hold their reframing after the bar ends — show a
+          // faded "persist" tail to the region's end so that reads visually.
+          if (layer.kind === 'position' && groupRight - right > 3) {
+            nodes.push(
+              <div
+                key={`tail-${layer.id}`}
+                style={{
+                  position: 'absolute',
+                  left: `${right}px`,
+                  width: `${groupRight - right}px`,
+                  top: `${barTop + BAR_H / 2 - 1}px`,
+                  height: '2px',
+                  background: `repeating-linear-gradient(90deg, ${color}aa 0 4px, transparent 4px 8px)`,
+                  pointerEvents: 'none',
+                }}
+              />,
+            );
+          }
           nodes.push(
             <div
               key={layer.id}
