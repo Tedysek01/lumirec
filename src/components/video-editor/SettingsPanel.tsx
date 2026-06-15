@@ -7,9 +7,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import Block from '@uiw/react-color-block';
-import { Trash2, Download, Crop, X, Upload, Film, Image, Sparkles, Palette, MousePointer2, RotateCw, Move, Link, Unlink, Diamond, Pause } from "lucide-react";
+import { Trash2, Download, Crop, X, Upload, Film, Image, Sparkles, Palette, MousePointer2, RotateCw, Move, Link, Unlink, Diamond } from "lucide-react";
 import { toast } from "sonner";
-import type { ZoomDepth, CropRegion, AnnotationRegion, AnnotationType, VideoSegment, SegmentTransform, SpotlightRegion, TransformProperty } from "./types";
+import type { ZoomDepth, CropRegion, AnnotationRegion, AnnotationType, VideoSegment, SegmentTransform, SpotlightRegion, TransformProperty, ZoomLayer, ZoomLayerKind } from "./types";
 import { CropControl } from "./CropControl";
 import { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
 import { AnnotationSettingsPanel } from "./AnnotationSettingsPanel";
@@ -116,11 +116,10 @@ interface SettingsPanelProps {
   onSegmentTransformReset?: (segmentId: string) => void;
   onSegmentDelete?: (segmentId: string) => void;
   playheadRelativeTimeMs?: number;
-  activeZoomTransform?: { zoom: number; focusX: number; focusY: number } | null;
-  playheadInsideSelectedZoom?: boolean;
-  onAddZoomPanPoint?: (zoomRegionId: string) => void;
-  onHoldPanPoint?: (zoomRegionId: string) => void;
-  onZoomPropertyChange?: (property: 'zoom' | 'focusX' | 'focusY', value: number) => void;
+  selectedZoomLayer?: ZoomLayer | null;
+  onAddZoomLayer?: (regionId: string, kind: ZoomLayerKind) => void;
+  onUpdateZoomLayer?: (regionId: string, layerId: string, patch: Partial<ZoomLayer>) => void;
+  onDeleteZoomLayer?: (regionId: string, layerId: string) => void;
 }
 
 export default SettingsPanel;
@@ -198,11 +197,10 @@ export function SettingsPanel({
   onSegmentTransformReset,
   onSegmentDelete,
   playheadRelativeTimeMs = 0,
-  activeZoomTransform,
-  playheadInsideSelectedZoom = false,
-  onAddZoomPanPoint,
-  onHoldPanPoint,
-  onZoomPropertyChange,
+  selectedZoomLayer,
+  onAddZoomLayer,
+  onUpdateZoomLayer,
+  onDeleteZoomLayer,
 }: SettingsPanelProps) {
   const [wallpaperPaths, setWallpaperPaths] = useState<string[]>([]);
   const [customImages, setCustomImages] = useState<string[]>([]);
@@ -433,81 +431,83 @@ export function SettingsPanel({
                 </div>
               </div>
 
-              {/* Zoom Pan Point & Property Sliders */}
-              {playheadInsideSelectedZoom && selectedZoomId && (
+              {/* Zoom Layers */}
+              {selectedZoomId && (
                 <div className="mt-2 space-y-2">
                   <div className="flex gap-2">
-                    {onAddZoomPanPoint && (
-                      <Button
-                        onClick={() => onAddZoomPanPoint(selectedZoomId)}
-                        variant="outline"
-                        size="sm"
-                        className="flex-1 gap-1.5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-500/50 transition-all h-8 text-xs"
-                      >
-                        <Diamond className="w-3 h-3" />
-                        Pan Point
-                      </Button>
-                    )}
-                    {onHoldPanPoint && (
-                      <Button
-                        onClick={() => onHoldPanPoint(selectedZoomId)}
-                        variant="outline"
-                        size="sm"
-                        className="flex-1 gap-1.5 bg-cyan-500/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20 hover:border-cyan-500/50 transition-all h-8 text-xs"
-                      >
-                        <Pause className="w-3 h-3" />
-                        Hold Here
-                      </Button>
-                    )}
+                    <Button
+                      onClick={() => onAddZoomLayer?.(selectedZoomId, 'zoom')}
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 gap-1.5 bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20 hover:border-emerald-500/50 transition-all h-8 text-xs"
+                    >
+                      + Zoom vrstva
+                    </Button>
+                    <Button
+                      onClick={() => onAddZoomLayer?.(selectedZoomId, 'position')}
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 gap-1.5 bg-purple-500/10 text-purple-400 border-purple-500/30 hover:bg-purple-500/20 hover:border-purple-500/50 transition-all h-8 text-xs"
+                    >
+                      + Posun vrstva
+                    </Button>
                   </div>
 
-                  {activeZoomTransform && (
-                    <div className="space-y-2">
+                  {selectedZoomLayer && selectedZoomLayer.kind === 'zoom' && (
+                    <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-[10px] font-medium text-foreground/80">Zoom delta</div>
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          {(selectedZoomLayer.zoomDelta ?? 0) >= 0 ? '+' : ''}{(selectedZoomLayer.zoomDelta ?? 0).toFixed(2)}×
+                        </span>
+                      </div>
+                      <Slider
+                        value={[selectedZoomLayer.zoomDelta ?? 0]}
+                        onValueChange={(v) => onUpdateZoomLayer?.(selectedZoomId, selectedZoomLayer.id, { zoomDelta: v[0] })}
+                        min={-3} max={3} step={0.05}
+                        className="w-full [&_[role=slider]]:bg-emerald-400 [&_[role=slider]]:border-emerald-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                      />
+                    </div>
+                  )}
+
+                  {selectedZoomLayer && selectedZoomLayer.kind === 'position' && (
+                    <div className="grid grid-cols-2 gap-2">
                       <div className="p-2 rounded-lg bg-secondary border border-border/30">
                         <div className="flex items-center justify-between mb-1">
-                          <div className="text-[10px] font-medium text-foreground/80">Zoom Level</div>
-                          <span className="text-[10px] text-muted-foreground font-mono">{activeZoomTransform.zoom.toFixed(2)}x</span>
+                          <div className="text-[10px] font-medium text-foreground/80">Posun X</div>
+                          <span className="text-[10px] text-muted-foreground font-mono">{Math.round((selectedZoomLayer.focusDx ?? 0) * 100)}%</span>
                         </div>
                         <Slider
-                          value={[activeZoomTransform.zoom]}
-                          onValueChange={(values) => onZoomPropertyChange?.('zoom', values[0])}
-                          min={1.0}
-                          max={5.0}
-                          step={0.05}
-                          className="w-full [&_[role=slider]]:bg-cyan-400 [&_[role=slider]]:border-cyan-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                          value={[selectedZoomLayer.focusDx ?? 0]}
+                          onValueChange={(v) => onUpdateZoomLayer?.(selectedZoomId, selectedZoomLayer.id, { focusDx: v[0] })}
+                          min={-1} max={1} step={0.01}
+                          className="w-full [&_[role=slider]]:bg-purple-400 [&_[role=slider]]:border-purple-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
                         />
                       </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div className="p-2 rounded-lg bg-secondary border border-border/30">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="text-[10px] font-medium text-foreground/80">Focus X</div>
-                            <span className="text-[10px] text-muted-foreground font-mono">{Math.round(activeZoomTransform.focusX * 100)}%</span>
-                          </div>
-                          <Slider
-                            value={[activeZoomTransform.focusX]}
-                            onValueChange={(values) => onZoomPropertyChange?.('focusX', values[0])}
-                            min={0}
-                            max={1}
-                            step={0.01}
-                            className="w-full [&_[role=slider]]:bg-cyan-400 [&_[role=slider]]:border-cyan-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
-                          />
+                      <div className="p-2 rounded-lg bg-secondary border border-border/30">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-[10px] font-medium text-foreground/80">Posun Y</div>
+                          <span className="text-[10px] text-muted-foreground font-mono">{Math.round((selectedZoomLayer.focusDy ?? 0) * 100)}%</span>
                         </div>
-                        <div className="p-2 rounded-lg bg-secondary border border-border/30">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="text-[10px] font-medium text-foreground/80">Focus Y</div>
-                            <span className="text-[10px] text-muted-foreground font-mono">{Math.round(activeZoomTransform.focusY * 100)}%</span>
-                          </div>
-                          <Slider
-                            value={[activeZoomTransform.focusY]}
-                            onValueChange={(values) => onZoomPropertyChange?.('focusY', values[0])}
-                            min={0}
-                            max={1}
-                            step={0.01}
-                            className="w-full [&_[role=slider]]:bg-cyan-400 [&_[role=slider]]:border-cyan-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
-                          />
-                        </div>
+                        <Slider
+                          value={[selectedZoomLayer.focusDy ?? 0]}
+                          onValueChange={(v) => onUpdateZoomLayer?.(selectedZoomId, selectedZoomLayer.id, { focusDy: v[0] })}
+                          min={-1} max={1} step={0.01}
+                          className="w-full [&_[role=slider]]:bg-purple-400 [&_[role=slider]]:border-purple-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+                        />
                       </div>
                     </div>
+                  )}
+
+                  {selectedZoomLayer && (
+                    <Button
+                      onClick={() => onDeleteZoomLayer?.(selectedZoomId, selectedZoomLayer.id)}
+                      variant="outline"
+                      size="sm"
+                      className="w-full gap-1.5 text-destructive border-destructive/30 hover:bg-destructive/15 h-7 text-xs"
+                    >
+                      <Trash2 className="w-3 h-3" /> Smazat vrstvu
+                    </Button>
                   )}
                 </div>
               )}
