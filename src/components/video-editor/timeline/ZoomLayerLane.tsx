@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTimelineContext } from "dnd-timeline";
 import type { ZoomRegion, ZoomLayer, VideoSegment } from "../types";
 import { sourceToDisplayTime, displayToSourceTime } from "@/lib/segmentUtils";
@@ -47,23 +47,27 @@ export default function ZoomLayerLane({
   timelineRef,
 }: ZoomLayerLaneProps) {
   const { sidebarWidth, range, valueToPixels, pixelsToValue } = useTimelineContext();
-  const [drag, setDrag] = useState<{ layerId: string; mode: DragMode; start: ZoomLayer } | null>(null);
+  const [drag, setDrag] = useState<{ layerId: string; mode: DragMode; start: ZoomLayer; grabOffsetMs: number } | null>(null);
   const dragRef = useRef(drag);
   dragRef.current = drag;
+
+  const relAtClientX = useCallback((clientX: number): number => {
+    if (!timelineRef.current) return 0;
+    const rect = timelineRef.current.getBoundingClientRect();
+    const clickX = clientX - rect.left - sidebarWidth;
+    const displayMs = range.start + pixelsToValue(clickX);
+    const sourceMs = videoSegments.length > 0 ? displayToSourceTime(videoSegments, displayMs) : displayMs;
+    return Math.round(sourceMs - region.startMs);
+  }, [timelineRef, sidebarWidth, range.start, pixelsToValue, videoSegments, region.startMs]);
 
   useEffect(() => {
     if (!drag) return;
     const onMove = (e: MouseEvent) => {
-      if (!timelineRef.current) return;
       const d = dragRef.current;
       if (!d) return;
-      const rect = timelineRef.current.getBoundingClientRect();
-      const clickX = e.clientX - rect.left - sidebarWidth;
-      const displayMs = range.start + pixelsToValue(clickX);
-      const sourceMs = videoSegments.length > 0 ? displayToSourceTime(videoSegments, displayMs) : displayMs;
-      const relMs = Math.round(sourceMs - region.startMs);
+      const relMs = relAtClientX(e.clientX);
       if (d.mode === 'move') {
-        onMoveLayer(region.id, d.layerId, relMs);
+        onMoveLayer(region.id, d.layerId, relMs - d.grabOffsetMs);
       } else if (d.mode === 'resize-l') {
         onResizeLayer(region.id, d.layerId, Math.min(relMs, d.start.endMs - MIN_LAYER_MS), d.start.endMs);
       } else {
@@ -81,7 +85,7 @@ export default function ZoomLayerLane({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, [drag, region.id, region.startMs, videoSegments, sidebarWidth, range.start, pixelsToValue, onMoveLayer, onResizeLayer, timelineRef]);
+  }, [drag, region.id, relAtClientX, onMoveLayer, onResizeLayer]);
 
   const layers = region.layers ?? [];
   if (layers.length === 0) return null;
@@ -121,10 +125,14 @@ export default function ZoomLayerLane({
             }}
             onMouseDown={(e) => {
               e.stopPropagation();
-              const localX = e.nativeEvent.offsetX;
-              const mode: DragMode = localX < EDGE_PX ? 'resize-l' : localX > width - EDGE_PX ? 'resize-r' : 'move';
+              const barRect = e.currentTarget.getBoundingClientRect();
+              const localX = e.clientX - barRect.left;
+              const mode: DragMode = localX < EDGE_PX ? 'resize-l' : localX > barRect.width - EDGE_PX ? 'resize-r' : 'move';
               onSelectLayer(layer.id);
-              setDrag({ layerId: layer.id, mode, start: layer });
+              // grab offset: where inside the layer the user grabbed, so a move
+              // translates the bar instead of snapping its left edge to the cursor
+              const grabRel = relAtClientX(e.clientX);
+              setDrag({ layerId: layer.id, mode, start: layer, grabOffsetMs: grabRel - layer.startMs });
               document.body.style.cursor = mode === 'move' ? 'grabbing' : 'ew-resize';
               document.body.dataset.kfDragging = '1';
             }}
