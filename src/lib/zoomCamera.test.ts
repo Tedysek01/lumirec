@@ -148,6 +148,18 @@ describe('resolveZoomCameraAtTime', () => {
     expect(resolveZoomCameraAtTime(r, 2590).focusX).toBeLessThan(0.5);
   });
 
+  it('unwinds the position offset during the zoom-out so it converges to center (no hard cut)', () => {
+    // region 1000..3000, exit 400 -> zoom-out window source [2600..3000].
+    const r = makeRegion({
+      layers: [zoomLayer({ kind: 'position', zoomDelta: undefined, startMs: 400, endMs: 600, focusDx: -0.3, focusDy: 0 })],
+    });
+    // deep in the zoom-out the offset has unwound — focus is back near center,
+    // matching the identity (0.5) the camera takes at the region boundary.
+    expect(resolveZoomCameraAtTime(r, 2980).focusX).toBeGreaterThan(0.45);
+    // continuity: just inside the end is near 0.5, identity just outside is 0.5
+    expect(resolveZoomCameraAtTime(r, 2999).focusX).toBeCloseTo(0.5, 1);
+  });
+
   it('still returns a zoom layer to zero after its bar ends', () => {
     const r = makeRegion({ layers: [zoomLayer({ kind: 'zoom', startMs: 400, endMs: 600, zoomDelta: 0.8 })] });
     // rel 1000 (source 2000) is past the zoom layer end → no added zoom.

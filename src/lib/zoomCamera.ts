@@ -115,16 +115,30 @@ export function layerWeight(layer: ZoomLayer, relTimeMs: number): number {
 }
 
 /**
- * Position-layer weight: eases 0→1 across the layer's span, then PERSISTS at 1
- * for the rest of the region. A position layer moves the framing and keeps it —
- * it does not snap back to the base focus when the bar ends. The region's own
- * zoom-out ramp is what eventually carries the camera out, from the moved spot.
+ * Position-layer weight at a region-relative time. Eases 0→1 across the layer's
+ * span (the pan), holds at 1 through the rest of the hold (the reframing stays),
+ * then eases 1→0 across the region's zoom-out window [holdEndRel..regionEndRel].
+ *
+ * The final unwind is what keeps the camera continuous: the offset reaches 0 at
+ * the exact moment the base zoom returns to 1, so there is no hard positional
+ * cut to center when the region ends. `holdEndRel`/`regionEndRel` are the hold
+ * end (t3) and region end relative to the region start.
  */
-export function positionLayerWeight(layer: ZoomLayer, relTimeMs: number): number {
+export function positionLayerWeight(layer: ZoomLayer, relTimeMs: number, holdEndRel: number, regionEndRel: number): number {
   if (relTimeMs <= layer.startMs) return 0;
-  if (relTimeMs >= layer.endMs) return 1;
-  const dur = Math.max(1, layer.endMs - layer.startMs);
-  return easeInOut(clamp((relTimeMs - layer.startMs) / dur, 0, 1));
+  let w: number;
+  if (relTimeMs < layer.endMs) {
+    const dur = Math.max(1, layer.endMs - layer.startMs);
+    w = easeInOut(clamp((relTimeMs - layer.startMs) / dur, 0, 1));
+  } else {
+    w = 1;
+  }
+  // Unwind together with the zoom-out so position converges to center as zoom → 1.
+  if (relTimeMs > holdEndRel && regionEndRel > holdEndRel) {
+    const e = easeInOut(clamp((relTimeMs - holdEndRel) / (regionEndRel - holdEndRel), 0, 1));
+    w *= 1 - e;
+  }
+  return w;
 }
 
 /**
@@ -139,13 +153,16 @@ export function resolveZoomCameraAtTime(region: ZoomRegion, sourceTimeMs: number
   }
   const cam = resolveBaseCameraAtTime(region, sourceTimeMs);
   const relTime = sourceTimeMs - region.startMs;
+  const { t3 } = resolveTransitionWindow(region);
+  const holdEndRel = t3 - region.startMs;
+  const regionEndRel = region.endMs - region.startMs;
   for (const layer of region.layers ?? []) {
     if (layer.kind === 'zoom') {
       const w = layerWeight(layer, relTime);
       if (w <= 0) continue;
       cam.zoom += (layer.zoomDelta ?? 0) * w;
     } else {
-      const w = positionLayerWeight(layer, relTime);
+      const w = positionLayerWeight(layer, relTime, holdEndRel, regionEndRel);
       if (w <= 0) continue;
       cam.focusX += (layer.focusDx ?? 0) * w;
       cam.focusY += (layer.focusDy ?? 0) * w;
