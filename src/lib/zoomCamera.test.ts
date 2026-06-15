@@ -90,6 +90,12 @@ describe('layerWeight', () => {
     const l = zoomLayer({ startMs: 0, endMs: 200, enterMs: 200, exitMs: 200 });
     expect(layerWeight(l, 100)).toBeCloseTo(1, 1); // peak near the middle, not 0
   });
+
+  it('is 1 everywhere inside when enterMs and exitMs are 0', () => {
+    const l = zoomLayer({ enterMs: 0, exitMs: 0 });
+    expect(layerWeight(l, 700)).toBe(1);
+    expect(layerWeight(l, 1499)).toBe(1);
+  });
 });
 
 describe('resolveZoomCameraAtTime', () => {
@@ -133,6 +139,17 @@ describe('resolveZoomCameraAtTime', () => {
   it('ignores a layer whose weight is 0 at the sampled time', () => {
     const r = makeRegion({ layers: [zoomLayer({ startMs: 500, endMs: 700 })] });
     expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
+  });
+
+  it('applies a partial position offset during the layer enter ramp', () => {
+    // layer spans rel [500..1500], enter 200ms; at rel 600 the weight is ~0.5
+    const r = makeRegion({
+      layers: [zoomLayer({ kind: 'position', zoomDelta: undefined, focusDx: -0.4, focusDy: 0, enterMs: 200, exitMs: 200 })],
+    });
+    const cam = resolveZoomCameraAtTime(r, 1600); // source 1600 -> rel 600
+    // full offset would put focusX at 0.1; at ~half weight it should sit between 0.1 and 0.5
+    expect(cam.focusX).toBeGreaterThan(0.1);
+    expect(cam.focusX).toBeLessThan(0.5);
   });
 });
 

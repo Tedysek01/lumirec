@@ -102,6 +102,7 @@ export function layerWeight(layer: ZoomLayer, relTimeMs: number): number {
     enter *= s;
     exit *= s;
   }
+  // After scaling, inEnd <= outStart always holds: enter + exit <= dur.
   const inEnd = layer.startMs + enter;
   const outStart = layer.endMs - exit;
   if (enter > 0 && relTimeMs < inEnd) {
