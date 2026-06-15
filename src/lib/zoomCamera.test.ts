@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveZoomCameraAtTime,
-  resolveHoldCameraAtRelTime,
+  resolveBaseCameraAtTime,
   resolveTransitionWindow,
-  getZoomAnchors,
-  clampPanPointTime,
+  layerWeight,
+  clampLayerToHold,
+  findActiveZoomRegion,
   IDENTITY_CAMERA,
 } from './zoomCamera';
-import type { ZoomRegion } from '@/components/video-editor/types';
+import type { ZoomRegion, ZoomLayer } from '@/components/video-editor/types';
 import { ZOOM_DEPTH_SCALES } from '@/components/video-editor/types';
 
 function makeRegion(overrides: Partial<ZoomRegion> = {}): ZoomRegion {
@@ -19,7 +20,15 @@ function makeRegion(overrides: Partial<ZoomRegion> = {}): ZoomRegion {
     focus: { cx: 0.5, cy: 0.5 },
     enterTransition: { type: 'none', durationMs: 400 },
     exitTransition: { type: 'none', durationMs: 400 },
+    layers: [],
     ...overrides,
+  };
+}
+
+function zoomLayer(overrides: Partial<ZoomLayer> = {}): ZoomLayer {
+  return {
+    id: 'l1', kind: 'zoom', startMs: 500, endMs: 1500,
+    enterMs: 200, exitMs: 200, zoomDelta: 0.8, ...overrides,
   };
 }
 
@@ -36,9 +45,50 @@ describe('resolveTransitionWindow', () => {
     const w = resolveTransitionWindow(
       makeRegion({ startMs: 0, endMs: 600, enterTransition: { type: 'none', durationMs: 400 }, exitTransition: { type: 'none', durationMs: 400 } }),
     );
-    // 400+400=800 > 600 → scale 0.75 → enter 300, exit 300
     expect(w.t2).toBeCloseTo(300, 0);
     expect(w.t3).toBeCloseTo(300, 0);
+  });
+});
+
+describe('resolveBaseCameraAtTime', () => {
+  it('is identity outside the region', () => {
+    const r = makeRegion();
+    expect(resolveBaseCameraAtTime(r, 500)).toEqual(IDENTITY_CAMERA);
+    expect(resolveBaseCameraAtTime(r, 3500)).toEqual(IDENTITY_CAMERA);
+  });
+
+  it('reaches the depth target during the hold', () => {
+    const cam = resolveBaseCameraAtTime(makeRegion(), 2000);
+    expect(cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
+    expect(cam.focusX).toBeCloseTo(0.5, 5);
+  });
+
+  it('ramps up from identity after start and down before end', () => {
+    const r = makeRegion();
+    expect(resolveBaseCameraAtTime(r, 1001).zoom).toBeGreaterThan(1);
+    expect(resolveBaseCameraAtTime(r, 1001).zoom).toBeLessThan(ZOOM_DEPTH_SCALES[3]);
+    expect(resolveBaseCameraAtTime(r, 2999).zoom).toBeLessThan(ZOOM_DEPTH_SCALES[3]);
+  });
+});
+
+describe('layerWeight', () => {
+  it('is 0 outside the layer span and 1 in the hold', () => {
+    const l = zoomLayer();
+    expect(layerWeight(l, 400)).toBe(0);
+    expect(layerWeight(l, 1600)).toBe(0);
+    expect(layerWeight(l, 1000)).toBeCloseTo(1, 5);
+  });
+
+  it('ramps between 0 and 1 inside the enter window', () => {
+    const l = zoomLayer();
+    const w = layerWeight(l, 600); // 100ms into a 200ms enter
+    expect(w).toBeGreaterThan(0);
+    expect(w).toBeLessThan(1);
+  });
+
+  it('scales enter+exit down when they exceed the layer duration', () => {
+    const l = zoomLayer({ startMs: 0, endMs: 200, enterMs: 200, exitMs: 200 });
+    expect(layerWeight(l, 100)).toBeCloseTo(1, 1); // peak near the middle, not 0
   });
 });
 
@@ -46,118 +96,60 @@ describe('resolveZoomCameraAtTime', () => {
   it('is identity outside the region', () => {
     const r = makeRegion();
     expect(resolveZoomCameraAtTime(r, 500)).toEqual(IDENTITY_CAMERA);
-    expect(resolveZoomCameraAtTime(r, 3500)).toEqual(IDENTITY_CAMERA);
   });
 
-  it('reaches the depth target at the hold (no pan points)', () => {
+  it('a base-only region matches the base camera', () => {
     const r = makeRegion();
-    const cam = resolveZoomCameraAtTime(r, 2000); // middle of hold
-    expect(cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
-    expect(cam.focusX).toBeCloseTo(0.5, 5);
+    expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
   });
 
-  it('starts ramping from identity at region start', () => {
-    const r = makeRegion();
-    const cam = resolveZoomCameraAtTime(r, 1001); // just after start
-    expect(cam.zoom).toBeGreaterThan(1);
-    expect(cam.zoom).toBeLessThan(ZOOM_DEPTH_SCALES[3]);
+  it('adds a zoom layer delta on top of the base during its hold', () => {
+    const r = makeRegion({ layers: [zoomLayer()] }); // hold rel ~1000 -> source 2000
+    expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3] + 0.8, 5);
   });
 
-  it('returns to identity by region end', () => {
-    const r = makeRegion();
-    const cam = resolveZoomCameraAtTime(r, 2999);
-    expect(cam.zoom).toBeGreaterThan(1);
-    expect(cam.zoom).toBeLessThan(ZOOM_DEPTH_SCALES[3]);
-  });
-
-  it('honors a single pan point focus during the hold', () => {
+  it('sums two overlapping zoom layers', () => {
     const r = makeRegion({
-      panPoints: [{ id: 'p1', timeMs: 1000, focusX: 0.8, focusY: 0.2, zoom: 2 }],
+      layers: [zoomLayer({ id: 'a', zoomDelta: 0.5 }), zoomLayer({ id: 'b', zoomDelta: 0.3 })],
+    });
+    expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3] + 0.8, 5);
+  });
+
+  it('clamps a negative zoom layer so zoom never drops below 1', () => {
+    const r = makeRegion({ depth: 1, layers: [zoomLayer({ zoomDelta: -5 })] }); // base 1.25
+    expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeGreaterThanOrEqual(1);
+  });
+
+  it('offsets focus with a position layer, clamped to [0,1]', () => {
+    const r = makeRegion({
+      layers: [zoomLayer({ kind: 'position', zoomDelta: undefined, focusDx: -0.3, focusDy: -0.2 })],
     });
     const cam = resolveZoomCameraAtTime(r, 2000);
-    expect(cam.focusX).toBeCloseTo(0.8, 5);
-    expect(cam.focusY).toBeCloseTo(0.2, 5);
-    expect(cam.zoom).toBeCloseTo(2, 5);
+    expect(cam.focusX).toBeCloseTo(0.2, 5);
+    expect(cam.focusY).toBeCloseTo(0.3, 5);
+    expect(cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5); // position layer leaves zoom alone
   });
 
-  it('interpolates between two pan points', () => {
-    const r = makeRegion({
-      panPoints: [
-        { id: 'p1', timeMs: 600, focusX: 0.2, focusY: 0.5, zoom: 2 },
-        { id: 'p2', timeMs: 1400, focusX: 0.8, focusY: 0.5, zoom: 2 },
-      ],
-    });
-    // anchors clamped into hold window [400..1600]; midpoint between 600 and 1400 is rel 1000 → source 2000
-    const cam = resolveZoomCameraAtTime(r, 2000);
-    expect(cam.focusX).toBeGreaterThan(0.2);
-    expect(cam.focusX).toBeLessThan(0.8);
-  });
-
-  it('moving a pan point in time does NOT change the zoom-in ramp duration', () => {
-    const early = makeRegion({ panPoints: [{ id: 'p1', timeMs: 500, focusX: 0.7, focusY: 0.3, zoom: 2 }] });
-    const late = makeRegion({ panPoints: [{ id: 'p1', timeMs: 1500, focusX: 0.7, focusY: 0.3, zoom: 2 }] });
-    // At t2 (source 1400) the zoom-in has completed to the anchor zoom in BOTH cases.
-    expect(resolveZoomCameraAtTime(early, 1400).zoom).toBeCloseTo(resolveZoomCameraAtTime(late, 1400).zoom, 5);
+  it('ignores a layer whose weight is 0 at the sampled time', () => {
+    const r = makeRegion({ layers: [zoomLayer({ startMs: 500, endMs: 700 })] });
+    expect(resolveZoomCameraAtTime(r, 2000).zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
   });
 });
 
-describe('resolveHoldCameraAtRelTime', () => {
-  it('returns the full hold zoom even at the hold start (never a ramp value)', () => {
-    const r = makeRegion();
-    // Hold window starts at rel 400 (+MIN_PAN_OFFSET); a pan point created while
-    // the playhead sits in the enter ramp gets clamped to the hold start. Its
-    // camera must carry the FULL depth zoom, not the half-ramped one.
-    const relTime = clampPanPointTime(r, 0);
-    const cam = resolveHoldCameraAtRelTime(r, relTime);
-    expect(cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
-    expect(cam.focusX).toBeCloseTo(0.5, 5);
-  });
-
-  it('returns full zoom at the region start boundary too', () => {
-    const r = makeRegion();
-    // resolveZoomCameraAtTime at startMs is identity (zoom 1); the hold camera
-    // for a pan point must not be.
-    expect(resolveZoomCameraAtTime(r, r.startMs).zoom).toBe(1);
-    const cam = resolveHoldCameraAtRelTime(r, clampPanPointTime(r, 0));
-    expect(cam.zoom).toBeGreaterThan(1.5);
-  });
-
-  it('interpolates between pan points by relative time', () => {
-    const r = makeRegion({
-      panPoints: [
-        { id: 'p1', timeMs: 600, focusX: 0.2, focusY: 0.5, zoom: 2 },
-        { id: 'p2', timeMs: 1400, focusX: 0.8, focusY: 0.5, zoom: 3 },
-      ],
-    });
-    const cam = resolveHoldCameraAtRelTime(r, 1000); // midpoint
-    expect(cam.focusX).toBeGreaterThan(0.2);
-    expect(cam.focusX).toBeLessThan(0.8);
-    expect(cam.zoom).toBeGreaterThan(2);
-    expect(cam.zoom).toBeLessThan(3);
-  });
-
-  it('clamps to the first/last anchor outside the anchor span', () => {
-    const r = makeRegion({
-      panPoints: [{ id: 'p1', timeMs: 1000, focusX: 0.7, focusY: 0.3, zoom: 2.5 }],
-    });
-    expect(resolveHoldCameraAtRelTime(r, 0).zoom).toBeCloseTo(2.5, 5);
-    expect(resolveHoldCameraAtRelTime(r, 99999).zoom).toBeCloseTo(2.5, 5);
+describe('clampLayerToHold', () => {
+  it('clamps layer start/end into the hold window [t2..t3] (rel)', () => {
+    const r = makeRegion(); // hold rel window [400..1600]
+    const clamped = clampLayerToHold(r, zoomLayer({ startMs: -100, endMs: 5000 }));
+    expect(clamped.startMs).toBeGreaterThanOrEqual(400);
+    expect(clamped.endMs).toBeLessThanOrEqual(1600);
+    expect(clamped.endMs).toBeGreaterThan(clamped.startMs);
   });
 });
 
-describe('getZoomAnchors', () => {
-  it('synthesizes a single anchor from depth/focus when no pan points', () => {
-    const anchors = getZoomAnchors(makeRegion());
-    expect(anchors).toHaveLength(1);
-    expect(anchors[0].cam.zoom).toBeCloseTo(ZOOM_DEPTH_SCALES[3], 5);
-  });
-});
-
-describe('clampPanPointTime', () => {
-  it('keeps pan points inside the hold window', () => {
+describe('findActiveZoomRegion', () => {
+  it('finds the region covering a time', () => {
     const r = makeRegion();
-    // hold window rel ≈ [430..1570]
-    expect(clampPanPointTime(r, 0)).toBeGreaterThanOrEqual(430);
-    expect(clampPanPointTime(r, 5000)).toBeLessThanOrEqual(1570);
+    expect(findActiveZoomRegion([r], 2000)?.id).toBe('z1');
+    expect(findActiveZoomRegion([r], 4000)).toBeUndefined();
   });
 });
