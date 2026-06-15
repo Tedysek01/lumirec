@@ -157,8 +157,10 @@ function calculateTimelineScale(durationSeconds: number): TimelineScaleConfig {
   const intervalMs = Math.round(selectedCandidate.intervalSeconds * 1000);
   const gridMs = Math.round(selectedCandidate.gridSeconds * 1000);
 
-  // Set minItemDurationMs to 1ms for maximum granularity
-  const minItemDurationMs = 1;
+  // Minimum region length. Kept large enough that a region is always visible and
+  // grabbable on the timeline — a sub-pixel sliver becomes an invisible item that
+  // silently blocks dragging/resizing its neighbours (it still counts for overlap).
+  const minItemDurationMs = 300;
   const defaultItemDurationMs = Math.min(
     Math.max(minItemDurationMs, intervalMs * 2),
     totalMs > 0 ? totalMs : intervalMs * 2,
