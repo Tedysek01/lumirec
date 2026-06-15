@@ -9,6 +9,7 @@ import Row from "./Row";
 import Item from "./Item";
 import VideoSegmentItem from "./VideoSegmentItem";
 import KeyframeTrack from "./KeyframeTrack";
+import ZoomLayerLane from "./ZoomLayerLane";
 import TrackLabel from "./TrackLabel";
 import WaveformRow from "./WaveformRow";
 import type { Range, Span } from "dnd-timeline";
@@ -97,12 +98,11 @@ interface TimelineEditorProps {
   onAddKeyframeAtPlayhead?: (segmentId: string, relativeTimeMs: number) => void;
   onDeleteKeyframesAtTime?: (segmentId: string, timeMs: number) => void;
   onMoveKeyframesAtTime?: (segmentId: string, oldTimeMs: number, newTimeMs: number) => void;
-  /** Move a zoom pan point (region-relative ms); clamps out of the transition zones. */
-  onMoveZoomPanPoint?: (regionId: string, oldRelTimeMs: number, newRelTimeMs: number) => void;
-  /** Delete a zoom pan point at a region-relative time. */
-  onDeleteZoomPanPoint?: (regionId: string, relTimeMs: number) => void;
-  /** Clamp a candidate pan-point time to its zoom region's safe hold window. */
-  clampZoomPanPointTime?: (regionId: string, relTimeMs: number) => number;
+  selectedZoomLayerId: string | null;
+  onSelectZoomLayer: (layerId: string | null) => void;
+  onMoveZoomLayer: (regionId: string, layerId: string, newStartMs: number) => void;
+  onResizeZoomLayer: (regionId: string, layerId: string, startMs: number, endMs: number) => void;
+  onDeleteZoomLayer: (regionId: string, layerId: string) => void;
 }
 
 interface TimelineScaleConfig {
@@ -769,9 +769,11 @@ export default function TimelineEditor({
   onAddKeyframeAtPlayhead,
   onDeleteKeyframesAtTime,
   onMoveKeyframesAtTime,
-  onMoveZoomPanPoint,
-  onDeleteZoomPanPoint,
-  clampZoomPanPointTime,
+  selectedZoomLayerId,
+  onSelectZoomLayer,
+  onMoveZoomLayer,
+  onResizeZoomLayer,
+  onDeleteZoomLayer,
 }: TimelineEditorProps) {
   const totalMs = useMemo(() => Math.max(0, Math.round(videoDuration * 1000)), [videoDuration]);
   // Effective total for display: sum of segment durations (no gaps)
@@ -1411,23 +1413,22 @@ export default function TimelineEditor({
               ) : undefined
             }
           >
-            {zoomRegions.length > 0 && (
-              <KeyframeTrack
-                key="kf-zoom"
-                segment={videoSegments[0] || { id: 'dummy', sourceStartMs: 0, sourceEndMs: effectiveTotalMs, timelineStartMs: 0, transform: {} as VideoSegment['transform'], keyframes: [] }}
-                filter="zoom"
-                zoomRegions={zoomRegions}
-                videoSegments={videoSegments}
-                selectedKeyframeTime={null}
-                onSelectKeyframeTime={() => {}}
-                onMoveZoomPanPoint={onMoveZoomPanPoint}
-                onDeleteZoomPanPoint={onDeleteZoomPanPoint}
-                clampZoomPanPointTime={clampZoomPanPointTime}
-                onSeek={onSeek}
-                videoDurationMs={effectiveTotalMs}
-                timelineRef={timelineContentRef}
-              />
-            )}
+            {(() => {
+              const selected = zoomRegions.find((r) => r.id === selectedZoomId);
+              if (!selected) return null;
+              return (
+                <ZoomLayerLane
+                  region={selected}
+                  videoSegments={videoSegments}
+                  selectedLayerId={selectedZoomLayerId}
+                  onSelectLayer={onSelectZoomLayer}
+                  onMoveLayer={onMoveZoomLayer}
+                  onResizeLayer={onResizeZoomLayer}
+                  onDeleteLayer={onDeleteZoomLayer}
+                  timelineRef={timelineContentRef}
+                />
+              );
+            })()}
           </Timeline>
         </TimelineWrapper>
       </div>

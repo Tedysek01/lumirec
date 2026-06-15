@@ -265,6 +265,7 @@ export function generateZoomRegions(
       endMs: Math.round(endMs),
       depth,
       focus: { cx: focus.cx, cy: focus.cy },
+      layers: [],
     });
   }
 

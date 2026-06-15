@@ -30,7 +30,7 @@ interface VideoPlaybackProps {
   zoomRegions: ZoomRegion[];
   selectedZoomId: string | null;
   onSelectZoom: (id: string | null) => void;
-  onZoomFocusChange: (id: string, focus: ZoomFocus) => void;
+  onZoomFocusChange?: (id: string, focus: ZoomFocus) => void;
   isPlaying: boolean;
   showShadow?: boolean;
   shadowIntensity?: number;
@@ -295,7 +295,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(({
     };
     const clampedFocus = clampFocusToStage(unclampedFocus, region.depth);
 
-    onZoomFocusChange(region.id, clampedFocus);
+    onZoomFocusChange?.(region.id, clampedFocus);
     updateOverlayForRegion({ ...region, focus: clampedFocus }, clampedFocus);
   };
 

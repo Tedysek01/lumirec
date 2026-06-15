@@ -77,6 +77,7 @@ export default function VideoEditor() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
+  const [selectedZoomLayerId, setSelectedZoomLayerId] = useState<string | null>(null);
   const [selectedTrimId, setSelectedTrimId] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [selectedSpotlightId, setSelectedSpotlightId] = useState<string | null>(null);
@@ -141,6 +142,7 @@ export default function VideoEditor() {
     }
     // Reset selections
     setSelectedZoomId(null);
+    setSelectedZoomLayerId(null);
     setSelectedTrimId(null);
     setSelectedAnnotationId(null);
     setSelectedSpotlightId(null);
@@ -339,7 +341,11 @@ export default function VideoEditor() {
   }
 
   const handleSelectZoom = useCallback((id: string | null) => {
-    setSelectedZoomId(id);
+    setSelectedZoomId((prev) => {
+      // Clear stale layer selection when switching to a different region (or deselecting)
+      if (prev !== id) setSelectedZoomLayerId(null);
+      return id;
+    });
     if (id) {
       setSelectedTrimId(null);
       setSelectedAnnotationId(null);
@@ -352,6 +358,7 @@ export default function VideoEditor() {
     setSelectedTrimId(id);
     if (id) {
       setSelectedZoomId(null);
+      setSelectedZoomLayerId(null);
       setSelectedAnnotationId(null);
       setSelectedSpotlightId(null);
       setSelectedSegmentId(null);
@@ -362,6 +369,7 @@ export default function VideoEditor() {
     setSelectedAnnotationId(id);
     if (id) {
       setSelectedZoomId(null);
+      setSelectedZoomLayerId(null);
       setSelectedTrimId(null);
       setSelectedSpotlightId(null);
       setSelectedSegmentId(null);
@@ -372,6 +380,7 @@ export default function VideoEditor() {
     setSelectedSpotlightId(id);
     if (id) {
       setSelectedZoomId(null);
+      setSelectedZoomLayerId(null);
       setSelectedTrimId(null);
       setSelectedAnnotationId(null);
       setSelectedSegmentId(null);
@@ -385,19 +394,16 @@ export default function VideoEditor() {
   const {
     handleZoomAdded,
     handleZoomSpanChange,
-    handleZoomFocusChange,
     handleZoomDepthChange,
     handleZoomTransitionChange,
     handleZoomDelete,
     handleAutoZoomApply,
-    handleAddZoomPanPoint,
-    handleHoldPanPoint,
-    handleZoomPropertyChange,
-    handleMoveZoomPanPoint,
-    handleDeleteZoomPanPoint,
-    clampZoomPanPointTime,
-    playheadInsideSelectedZoom,
-    activeZoomTransform,
+    handleAddZoomLayer,
+    handleUpdateZoomLayer,
+    handleResizeZoomLayer,
+    handleMoveZoomLayer,
+    handleDeleteZoomLayer,
+    selectedLayer,
   } = useZoomHandlers({
     setEditorState,
     setEditorStateDebounced,
@@ -405,8 +411,10 @@ export default function VideoEditor() {
     zoomRegions,
     sourceTimeMs,
     selectedZoomId,
+    selectedZoomLayerId,
     nextZoomIdRef,
     setSelectedZoomId,
+    setSelectedZoomLayerId,
     setSelectedTrimId,
     setSelectedAnnotationId,
   });
@@ -482,6 +490,7 @@ export default function VideoEditor() {
     setEditorState(prev => ({ ...prev, trimRegions: [...prev.trimRegions, newRegion] }));
     setSelectedTrimId(id);
     setSelectedZoomId(null);
+    setSelectedZoomLayerId(null);
     setSelectedAnnotationId(null);
   }, [setEditorState]);
 
@@ -512,6 +521,7 @@ export default function VideoEditor() {
     setSelectedSegmentId(id);
     if (id) {
       setSelectedZoomId(null);
+      setSelectedZoomLayerId(null);
       setSelectedTrimId(null);
       setSelectedAnnotationId(null);
       setSelectedSpotlightId(null);
@@ -707,6 +717,7 @@ export default function VideoEditor() {
   useEffect(() => {
     if (selectedZoomId && !zoomRegions.some((region) => region.id === selectedZoomId)) {
       setSelectedZoomId(null);
+      setSelectedZoomLayerId(null);
     }
   }, [selectedZoomId, zoomRegions]);
 
@@ -1114,7 +1125,6 @@ export default function VideoEditor() {
                       zoomRegions={zoomRegions}
                       selectedZoomId={selectedZoomId}
                       onSelectZoom={handleSelectZoom}
-                      onZoomFocusChange={handleZoomFocusChange}
                       isPlaying={isPlaying}
                       showShadow={shadowIntensity > 0}
                       shadowIntensity={shadowIntensity}
@@ -1222,9 +1232,11 @@ export default function VideoEditor() {
               onAddKeyframeAtPlayhead={handleAddKeyframeAtPlayhead}
               onDeleteKeyframesAtTime={handleDeleteKeyframesAtTime}
               onMoveKeyframesAtTime={handleMoveKeyframesAtTime}
-              onMoveZoomPanPoint={handleMoveZoomPanPoint}
-              onDeleteZoomPanPoint={handleDeleteZoomPanPoint}
-              clampZoomPanPointTime={clampZoomPanPointTime}
+              selectedZoomLayerId={selectedZoomLayerId}
+              onSelectZoomLayer={setSelectedZoomLayerId}
+              onMoveZoomLayer={handleMoveZoomLayer}
+              onResizeZoomLayer={handleResizeZoomLayer}
+              onDeleteZoomLayer={handleDeleteZoomLayer}
             />
               </div>
             </Panel>
@@ -1307,11 +1319,10 @@ export default function VideoEditor() {
             const sourceMs = Math.round(currentTime * 1000);
             return Math.max(0, sourceMs - seg.sourceStartMs);
           })()}
-          activeZoomTransform={activeZoomTransform}
-          playheadInsideSelectedZoom={playheadInsideSelectedZoom}
-          onAddZoomPanPoint={handleAddZoomPanPoint}
-          onHoldPanPoint={handleHoldPanPoint}
-          onZoomPropertyChange={handleZoomPropertyChange}
+          selectedZoomLayer={selectedLayer}
+          onAddZoomLayer={handleAddZoomLayer}
+          onUpdateZoomLayer={handleUpdateZoomLayer}
+          onDeleteZoomLayer={handleDeleteZoomLayer}
         />
       </div>
 
