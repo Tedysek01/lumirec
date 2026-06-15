@@ -300,7 +300,17 @@ export class FrameRenderer {
         const relativeTime = timeMs - seg.sourceStartMs;
         const resolved = resolveTransformAtTime(seg.keyframes, relativeTime, seg.transform);
         if (resolved.rotation !== 0 || resolved.scaleX !== 1 || resolved.scaleY !== 1 || resolved.positionX !== 0 || resolved.positionY !== 0) {
-          segmentTransform = resolved;
+          // positionX/Y are authored in preview-stage pixels. Rescale them to
+          // the export stage so the offset lands in the same relative spot —
+          // otherwise a 1080p+ export shows roughly half the shift seen in the
+          // preview.
+          const previewW = this.config.previewWidth || this.config.width;
+          const previewH = this.config.previewHeight || this.config.height;
+          segmentTransform = {
+            ...resolved,
+            positionX: resolved.positionX * (this.config.width / previewW),
+            positionY: resolved.positionY * (this.config.height / previewH),
+          };
         }
       }
     }
